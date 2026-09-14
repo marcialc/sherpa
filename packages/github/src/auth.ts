@@ -94,7 +94,7 @@ export class GitHubApp {
 
   async installationToken(
     input: ReviewJob,
-    permissions: "read" | "write" = "read",
+    permissions: "read" | "write" | "checks" = "read",
   ): Promise<string> {
     const job = reviewJobSchema.parse(input);
     const api = await this.api();
@@ -114,7 +114,10 @@ export class GitHubApp {
       maxBytes: 131072,
       body: {
         repository_ids: [job.repositoryId],
-        permissions: { metadata: "read", contents: "read", pull_requests: permissions },
+        permissions:
+          permissions === "checks"
+            ? { metadata: "read", checks: "write" }
+            : { metadata: "read", contents: "read", pull_requests: permissions },
       },
     });
     const parsed = z
@@ -125,13 +128,18 @@ export class GitHubApp {
           .max(16384)
           .refine((v) => !/[\r\n]/.test(v)),
         expires_at: z.iso.datetime(),
-        permissions: z
-          .object({
-            metadata: z.literal("read").optional(),
-            contents: z.literal("read"),
-            pull_requests: z.literal(permissions),
-          })
-          .strict(),
+        permissions:
+          permissions === "checks"
+            ? z
+                .object({ metadata: z.literal("read").optional(), checks: z.literal("write") })
+                .strict()
+            : z
+                .object({
+                  metadata: z.literal("read").optional(),
+                  contents: z.literal("read"),
+                  pull_requests: z.literal(permissions),
+                })
+                .strict(),
         repositories: z.array(repositorySchema).max(1).optional(),
       })
       .safeParse(response?.data);

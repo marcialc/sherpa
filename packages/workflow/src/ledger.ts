@@ -200,13 +200,16 @@ export class Ledger {
   }
   publicationState(
     reviewId: string,
-  ): { status: ReviewStatus; leaseUntil: number; githubReviewId?: number } | undefined {
+  ):
+    | { status: ReviewStatus; leaseUntil: number; githubReviewId?: number; outcome?: ReviewOutcome }
+    | undefined {
     const record = this.store.readJob(reviewId);
     return record
       ? {
           status: record.status,
           leaseUntil: record.leaseUntil,
           ...(record.githubReviewId ? { githubReviewId: record.githubReviewId } : {}),
+          ...(record.outcome ? { outcome: record.outcome } : {}),
         }
       : undefined;
   }

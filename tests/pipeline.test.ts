@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleWebhook } from "../apps/worker/src/webhook";
+import { withReviewCheck } from "../apps/worker/src/progress";
 import { GitHubClient, findingFingerprint } from "@sherpa/github";
 import { runReview, type Hypothesis } from "@sherpa/agents";
 import type { ModelProvider } from "@sherpa/models";
@@ -179,6 +180,46 @@ async function signedRequest(value: unknown, secret: string) {
   });
 }
 describe("webhook to workflow to review", () => {
+  it("queues the check before waiting for the PR lock and starts it before inspecting code", async () => {
+    const fixture = setup();
+    const events: string[] = [];
+    const claim = fixture.services.ledger.claim;
+    let busy = true;
+    fixture.services.ledger.claim = async (...args) => {
+      events.push("claim");
+      if (busy) {
+        busy = false;
+        return { status: "busy" };
+      }
+      return claim(...args);
+    };
+    const load = fixture.services.load;
+    fixture.services.load = async (...args) => {
+      events.push("load");
+      return load(...args);
+    };
+    const checks = {
+      queue: async () => {
+        events.push("queued");
+        return 77;
+      },
+      find: async () => 77,
+      start: async () => {
+        events.push("started");
+      },
+      complete: async () => {
+        events.push("completed");
+      },
+    };
+    await withReviewCheck(
+      fixtureJob,
+      fixture.steps,
+      async () => checks,
+      (onStarted) => runPipeline(fixtureJob, fixture.steps, { ...fixture.services, onStarted }),
+    );
+    expect(events).toEqual(["queued", "claim", "claim", "started", "load", "completed"]);
+    expect(fixture.posts).toHaveLength(1);
+  });
   it("runs the signed round trip and posts one actionable inline review across redelivery", async () => {
     const fixture = setup();
     let accepted: ReviewJob | undefined;

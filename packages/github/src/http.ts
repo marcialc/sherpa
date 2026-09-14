@@ -58,7 +58,7 @@ export class GitHubApi {
   async request(
     path: string,
     options: {
-      method?: "GET" | "POST";
+      method?: "GET" | "POST" | "PATCH";
       body?: unknown;
       maxBytes?: number;
       allow404?: boolean;

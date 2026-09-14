@@ -1,5 +1,6 @@
 export { GitHubApp, type AppIdentity } from "./auth";
 export { GitHubClient } from "./client";
+export { GitHubChecks, type CheckCompletion } from "./checks";
 export { GitHubError, GITHUB_API_VERSION, type Fetcher } from "./http";
 export {
   GitHubUserOAuth,

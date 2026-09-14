@@ -123,6 +123,7 @@ describe("durable review state transitions", () => {
       status: "published",
       leaseUntil: 0,
       githubReviewId: 123,
+      outcome: "NEEDS_ATTENTION",
     });
     expect(
       afterCrash.recoverPublication(job, 104, { id: 123, postedFingerprints: [confirmed] }),

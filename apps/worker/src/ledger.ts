@@ -6,7 +6,7 @@ import {
   type LedgerStore,
   type PublicationData,
 } from "@sherpa/workflow";
-import { reviewJobSchema, type ReviewJob } from "@sherpa/schemas";
+import { reviewJobSchema, type ReviewJob, type ReviewOutcome } from "@sherpa/schemas";
 import { GitHubApp, GitHubClient } from "@sherpa/github";
 
 export class ReviewLedger extends DurableObject<Env> {
@@ -79,6 +79,7 @@ export class ReviewLedger extends DurableObject<Env> {
   async reconcilePublication(input: ReviewJob): Promise<{
     status: "recovered" | "unresolved" | "none" | "waiting";
     githubReviewId?: number;
+    outcome?: ReviewOutcome;
     retryAfterMs?: number;
   }> {
     const parsed = reviewJobSchema.safeParse(input);
@@ -87,7 +88,7 @@ export class ReviewLedger extends DurableObject<Env> {
     const now = Date.now();
     const state = this.ledger.publicationState(job.reviewId);
     if (state?.status === "published" && state.githubReviewId)
-      return { status: "recovered", githubReviewId: state.githubReviewId };
+      return { status: "recovered", githubReviewId: state.githubReviewId, outcome: state.outcome };
     if (state?.status === "publishing" && state.leaseUntil > now)
       return { status: "waiting", retryAfterMs: Math.min(state.leaseUntil - now, 60000) };
     const candidate = this.ledger.getRecoverable(job.reviewId, now);
@@ -108,7 +109,13 @@ export class ReviewLedger extends DurableObject<Env> {
       const recovered = this.ctx.storage.transactionSync(() =>
         this.ledger.recoverPublication(job, Date.now(), found),
       );
-      return recovered ? { status: "recovered", githubReviewId: found.id } : { status: "none" };
+      return recovered
+        ? {
+            status: "recovered",
+            githubReviewId: found.id,
+            outcome: this.ledger.publicationState(job.reviewId)?.outcome,
+          }
+        : { status: "none" };
     } catch {
       return { status: "unresolved" };
     }

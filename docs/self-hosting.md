@@ -62,8 +62,13 @@ Under **Repository permissions**, set:
 | Metadata      | Read-only      |
 | Contents      | Read-only      |
 | Pull requests | Read and write |
+| Checks        | Read and write |
 
 Subscribe to **Pull request** events. Choose **Any account** if other people should be able to install your App; otherwise restrict it to your own account. GitHub's [App registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) explains these settings.
+
+For an existing App, save the permission changes, then approve the updated permissions under **Settings → Applications → Installed GitHub Apps → Sherpa → Configure**. Updating the App registration alone does not grant the new permissions to existing installations.
+
+Sherpa creates a **Sherpa** check on the reviewed commit when its Workflow starts. It moves from queued to in progress after acquiring the PR's review lock, then shows the review result. Must-fix findings and incomplete reviews fail the check; approved reviews with non-blocking comments pass. Skipped and superseded reviews are marked accordingly. The check is separate from GitHub Actions CI and Cloudflare Workers Builds.
 
 After creating the App:
 
@@ -264,19 +269,20 @@ GitHub-triggered reviews still need a gateway saved through the local `/setup` p
 
 ## Troubleshooting
 
-| Symptom                                      | What to check                                                                                                                                              |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **First deployment reports missing secrets** | Supply all five required values in `.env.sherpa` and use `pnpm run deploy --secrets-file .env.sherpa`.                                                     |
-| **Container build fails**                    | Start Docker and confirm it is available to your terminal. Keep SDK and image versions aligned.                                                            |
-| **Webhook returns `401`**                    | GitHub and the Worker must use the same webhook secret.                                                                                                    |
-| **Webhook returns `400`**                    | Check the event type, payload, installation/repository IDs, and delivery headers.                                                                          |
-| **Webhook returns `503`**                    | Check the deployed webhook secret and whether Cloudflare can start the review Workflow. Retry the delivery after fixing the problem.                       |
-| **Setup returns `503`**                      | Check `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `SETUP_SESSION_SECRET`.                                                                              |
-| **GitHub sign-in fails**                     | The App's callback URL must match the public origin plus `/setup/callback`. Check the Client Secret and HTTPS cookies.                                     |
-| **Review is incomplete after gateway setup** | Check model IDs/prices, token permissions, gateway funding, and the review's coverage notes. A saved gateway has not yet been tested against the provider. |
-| **Private repository cannot be fetched**     | Check App installation access, Contents permission, container provisioning, and outbound Git authentication.                                               |
-| **Project validation is unavailable**        | Check the lockfile, scripts, opt-in settings, and nested isolation support. Keep validation disabled where isolation is unavailable.                       |
-| **Review was discarded as stale**            | The PR changed while the review ran. Check the newer commit's Workflow.                                                                                    |
-| **Publication is uncertain**                 | Check whether the review already exists. Recovery checks GitHub without blindly repeating the review POST.                                                 |
+| Symptom                                      | What to check                                                                                                                                                                                                                                                    |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First deployment reports missing secrets** | Supply all five required values in `.env.sherpa` and use `pnpm run deploy --secrets-file .env.sherpa`.                                                                                                                                                           |
+| **Container build fails**                    | Start Docker and confirm it is available to your terminal. Keep SDK and image versions aligned.                                                                                                                                                                  |
+| **Webhook returns `401`**                    | GitHub and the Worker must use the same webhook secret.                                                                                                                                                                                                          |
+| **Webhook returns `400`**                    | Check the event type, payload, installation/repository IDs, and delivery headers.                                                                                                                                                                                |
+| **Webhook returns `503`**                    | Check the deployed webhook secret and whether Cloudflare can start the review Workflow. Retry the delivery after fixing the problem.                                                                                                                             |
+| **No Sherpa check appears**                  | Check the App's **Advanced → Recent deliveries** for a `pull_request` event and its response. A `202` means the Workflow was accepted. Confirm **Checks: Read and write** is approved for the installation, and inspect Workflow logs for `review.check_failed`. |
+| **Setup returns `503`**                      | Check `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `SETUP_SESSION_SECRET`.                                                                                                                                                                                    |
+| **GitHub sign-in fails**                     | The App's callback URL must match the public origin plus `/setup/callback`. Check the Client Secret and HTTPS cookies.                                                                                                                                           |
+| **Review is incomplete after gateway setup** | Check model IDs/prices, token permissions, gateway funding, and the review's coverage notes. A saved gateway has not yet been tested against the provider.                                                                                                       |
+| **Private repository cannot be fetched**     | Check App installation access, Contents permission, container provisioning, and outbound Git authentication.                                                                                                                                                     |
+| **Project validation is unavailable**        | Check the lockfile, scripts, opt-in settings, and nested isolation support. Keep validation disabled where isolation is unavailable.                                                                                                                             |
+| **Review was discarded as stale**            | The PR changed while the review ran. Check the newer commit's Workflow.                                                                                                                                                                                          |
+| **Publication is uncertain**                 | Check whether the review already exists. Recovery checks GitHub without blindly repeating the review POST.                                                                                                                                                       |
 
 For deeper details, see [architecture](architecture.md), [repository tools](../packages/sandbox/README.md), and the [validation record](validation.md).

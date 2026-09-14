@@ -3,7 +3,11 @@ import { log } from "@sherpa/shared";
 import type { Baseline, Claim, Ledger } from "./ledger";
 
 export interface Checkpoints {
-  run<T>(name: string, kind: "read" | "analysis" | "write", work: () => Promise<T>): Promise<T>;
+  run<T>(
+    name: string,
+    kind: "read" | "analysis" | "write" | "status",
+    work: () => Promise<T>,
+  ): Promise<T>;
   sleep(name: string, milliseconds: number): Promise<void>;
 }
 export interface PipelineLedger {
@@ -30,6 +34,7 @@ export interface PipelineLedger {
 export interface PipelineServices {
   ledger: PipelineLedger;
   maxDurationMs: number;
+  onStarted?(): Promise<void>;
   load(job: ReviewJob): Promise<{ context: PullRequestContext; config: RepoConfig }>;
   analyze(
     context: PullRequestContext,
@@ -76,6 +81,7 @@ export async function runPipeline(
   }
   const { token, baseline } = claim;
   try {
+    await services.onStarted?.();
     const { context, config } = await steps.run("load-pull-request-and-policy", "read", () =>
       services.load(job),
     );

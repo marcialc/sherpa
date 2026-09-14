@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { getSandbox } from "@cloudflare/sandbox";
-import { GitHubApp, GitHubClient, findingFingerprint } from "@sherpa/github";
+import { GitHubApp, GitHubChecks, GitHubClient, findingFingerprint } from "@sherpa/github";
 import { createProviderRegistry } from "@sherpa/models";
 import { loadTrustedPolicy, routeReview, runReview } from "@sherpa/agents";
 import { RepositorySession } from "@sherpa/sandbox";
@@ -11,15 +11,73 @@ import {
   type RepositoryTools,
   type ReviewJob,
 } from "@sherpa/schemas";
-import { runPipeline, type Checkpoints, type PipelineServices } from "@sherpa/workflow";
+import {
+  runPipeline,
+  type Checkpoints,
+  type PipelineOutcome,
+  type PipelineServices,
+} from "@sherpa/workflow";
 import { log } from "@sherpa/shared";
 import { unconfiguredBillingResult } from "./billing";
 import { getSettings, type RuntimeEnv } from "./settings";
+import { withReviewCheck } from "./progress";
+import { reviewSandboxId } from "./sandbox-id";
 
 export type WorkflowParams = ReviewJob & { recoveryOnly?: boolean };
 export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParams> {
   async run(event: WorkflowEvent<WorkflowParams>, step: WorkflowStep) {
     const job = event.payload;
+    const maxDurationMs = Math.min(
+      Math.max(Number(this.env.MAX_REVIEW_DURATION_MS) || 600000, 1000),
+      1800000,
+    );
+    const checkpoints: Checkpoints = {
+      async run<T>(
+        name: string,
+        kind: "read" | "analysis" | "write" | "status",
+        work: () => Promise<T>,
+      ): Promise<T> {
+        const serialized = await step.do(
+          name,
+          {
+            retries: {
+              limit: kind === "read" || kind === "status" ? 2 : 0,
+              delay: "2 seconds",
+              backoff: "exponential",
+            },
+            timeout: kind === "analysis" ? maxDurationMs + 120000 : "3 minutes",
+            sensitive: "output",
+          },
+          async () => JSON.stringify({ value: await work() }),
+        );
+        return (JSON.parse(serialized) as { value: T }).value;
+      },
+      sleep: (name, milliseconds) => step.sleep(name, milliseconds),
+    };
+    return withReviewCheck(
+      job,
+      checkpoints,
+      async () => {
+        const app = new GitHubApp({
+          appId: this.env.GITHUB_APP_ID,
+          privateKey: this.env.GITHUB_PRIVATE_KEY,
+        });
+        return new GitHubChecks(
+          await app.installationToken(job, "checks"),
+          await app.getIdentity(),
+        );
+      },
+      (onStarted) => this.runReview(job, step, checkpoints, onStarted),
+      job.recoveryOnly,
+    );
+  }
+
+  private async runReview(
+    job: WorkflowParams,
+    step: WorkflowStep,
+    checkpoints: Checkpoints,
+    onStarted: () => Promise<void>,
+  ): Promise<PipelineOutcome> {
     const ledger = this.env.REVIEW_LEDGER.getByName(
       `${job.installationId}:${job.repositoryId}:${job.number}`,
     );
@@ -38,13 +96,24 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
           async () => {
             try {
               const value = await ledger.reconcilePublication(job);
-              return { status: value.status, githubReviewId: value.githubReviewId };
+              return {
+                status: value.status,
+                githubReviewId: value.githubReviewId,
+                outcome: value.outcome,
+              };
             } catch {
               throw new Error("REVIEW_RECOVERY_FAILED");
             }
           },
         );
-        if (recovered.status === "recovered" || recovered.status === "none") return recovered;
+        if (recovered.status === "recovered")
+          return {
+            status: "published",
+            reviewId: job.reviewId,
+            githubReviewId: recovered.githubReviewId,
+            outcome: recovered.outcome,
+          };
+        if (recovered.status === "none") return { status: "failed", reviewId: job.reviewId };
         await step.sleep(`wait-for-recovery-${attempt}`, "30 seconds");
       }
       throw new Error("REVIEW_RECOVERY_UNRESOLVED");
@@ -62,27 +131,9 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
         undefined,
         await app.getIdentity(),
       );
-    const checkpoints: Checkpoints = {
-      async run<T>(
-        name: string,
-        kind: "read" | "analysis" | "write",
-        work: () => Promise<T>,
-      ): Promise<T> {
-        const serialized = await step.do(
-          name,
-          {
-            retries: { limit: kind === "read" ? 2 : 0, delay: "2 seconds", backoff: "exponential" },
-            timeout: kind === "analysis" ? settings.limits.maxDurationMs + 120000 : "3 minutes",
-            sensitive: "output",
-          },
-          async () => JSON.stringify({ value: await work() }),
-        );
-        return (JSON.parse(serialized) as { value: T }).value;
-      },
-      sleep: (name, milliseconds) => step.sleep(name, milliseconds),
-    };
     const services: PipelineServices = {
       ledger,
+      onStarted,
       maxDurationMs: settings.limits.maxDurationMs,
       async load(job) {
         const github = await client();
@@ -122,10 +173,7 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
         if (!gateway) return unconfiguredBillingResult(job, risk);
         const startedAt = Date.now();
         // A fresh container per analysis attempt: no reused working tree or tenant state.
-        const sandbox = getSandbox(
-          this.env.REVIEW_SANDBOX,
-          `${job.reviewId}-${crypto.randomUUID()}`,
-        );
+        const sandbox = getSandbox(this.env.REVIEW_SANDBOX, reviewSandboxId(job.reviewId));
         const session = new RepositorySession(sandbox, {
           validation: config.validation,
           allowValidation: settings.limits.allowValidation,
