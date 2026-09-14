@@ -175,6 +175,8 @@ pnpm run deploy --secrets-file .env.sherpa
 
 `pnpm check` runs formatting, lint, types, tests, and a Worker/container build without deploying. The second command publishes the service and supplies the required secrets together. Current Wrangler requires this approach for a [first deployment with required secrets](https://developers.cloudflare.com/workers/configuration/secrets/#secrets-on-deployed-workers).
 
+For Cloudflare Workers Builds, set the root directory to `/`, the build command to `pnpm run build`, and the deploy command to `pnpm run deploy`. If deployment reports missing secrets, add all five required Worker secrets before retrying.
+
 When deployment finishes, Wrangler prints your Worker URL. If it differs from the address you chose, update `PUBLIC_BASE_URL` and all three GitHub App URLs, then run `pnpm run deploy` again. Allow time for the repository container to become available.
 
 Check the health endpoint, replacing the hostname:
