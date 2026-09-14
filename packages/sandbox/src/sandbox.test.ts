@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RepositorySession, type RepositorySandboxClient } from "./index";
+import { RepositorySession, repositoryFailureCode, type RepositorySandboxClient } from "./index";
 import { SUPERVISOR, SUPERVISOR_COMMAND, type CommandSpec, type CommandResult } from "./runner";
 import { handleReviewOutbound, type OutboundPolicy } from "./outbound";
 import { repoConfigSchema, type ReviewJob, type ToolRequest } from "@sherpa/schemas";
@@ -27,7 +27,10 @@ function git(cwd: string, ...args: string[]): string {
 }
 async function supervised(spec: CommandSpec): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("python3", ["-I", "-c", SUPERVISOR], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("python3", ["-I", "-c", SUPERVISOR], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, SHERPA_COMMAND_SPEC: JSON.stringify(spec) },
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (data: Buffer) => {
@@ -41,7 +44,6 @@ async function supervised(spec: CommandSpec): Promise<CommandResult> {
       if (code !== 0) reject(new Error(stderr));
       else resolve(JSON.parse(stdout) as CommandResult);
     });
-    child.stdin.end(JSON.stringify(spec));
   });
 }
 function fixture(extraFiles: Record<string, string> = {}) {
@@ -89,7 +91,7 @@ function fixture(extraFiles: Record<string, string> = {}) {
     destroy: vi.fn(async () => undefined),
     exec: async (command, options) => {
       expect(command).toBe(SUPERVISOR_COMMAND);
-      const spec = JSON.parse(options!.stdin!) as CommandSpec;
+      const spec = JSON.parse(options!.env!.SHERPA_COMMAND_SPEC!) as CommandSpec;
       commands.push(structuredClone(spec));
       // The production adapter never receives local paths or enables the file protocol.
       spec.argv = spec.argv.map((arg) =>
@@ -108,6 +110,37 @@ function fixture(extraFiles: Record<string, string> = {}) {
 }
 
 describe("bounded command supervisor", () => {
+  it("logs fixed failure codes without SDK command text or repository data", () => {
+    expect(repositoryFailureCode(new Error("SANDBOX_SUPERVISOR_FAILED"))).toBe(
+      "SANDBOX_SUPERVISOR_FAILED",
+    );
+    expect(repositoryFailureCode(new Error("command failed: private-source token-value"))).toBe(
+      "SANDBOX_UNAVAILABLE",
+    );
+  });
+  it("uses per-command env with closed stdin and preserves hostile text literally", () => {
+    const directory = temporary();
+    const literal = "quotes '\"; $(touch injected); `touch injected`\nUnicode: 雪";
+    const spec: CommandSpec = {
+      argv: [
+        "python3",
+        "-c",
+        "import json, os, sys; print(json.dumps([sys.argv[1], os.getenv('SHERPA_COMMAND_SPEC')], ensure_ascii=False))",
+        literal,
+      ],
+      cwd: directory,
+      maxBytes: 1024,
+      timeoutMs: 2000,
+    };
+    const stdout = execFileSync("/bin/sh", ["-c", SUPERVISOR_COMMAND], {
+      env: { ...process.env, SHERPA_COMMAND_SPEC: JSON.stringify(spec) },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+    const result = JSON.parse(stdout) as CommandResult;
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.output)).toEqual([literal, null]);
+  });
   it("preserves ordinary exit statuses and never inherits live credentials", async () => {
     process.env.SHERPA_TEST_SECRET = "should-not-appear";
     const result = await supervised({
@@ -300,7 +333,7 @@ describe("repository snapshot tools against real local Git", () => {
     const originalExec = data.client.exec;
     const evidenceCommands: CommandSpec[] = [];
     data.client.exec = async (command, options) => {
-      const spec = JSON.parse(options!.stdin!) as CommandSpec;
+      const spec = JSON.parse(options!.env!.SHERPA_COMMAND_SPEC!) as CommandSpec;
       if (!spec.evidence) return originalExec(command, options);
       evidenceCommands.push(spec);
       return {

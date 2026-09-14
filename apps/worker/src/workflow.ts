@@ -3,7 +3,7 @@ import { getSandbox } from "@cloudflare/sandbox";
 import { GitHubApp, GitHubChecks, GitHubClient, findingFingerprint } from "@sherpa/github";
 import { createProviderRegistry } from "@sherpa/models";
 import { loadTrustedPolicy, routeReview, runReview } from "@sherpa/agents";
-import { RepositorySession } from "@sherpa/sandbox";
+import { RepositorySession, repositoryFailureCode } from "@sherpa/sandbox";
 import {
   calculateOutcome,
   effectiveConfig,
@@ -193,6 +193,7 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
             }),
         };
         try {
+          let repositoryStage = "sandbox_prepare";
           try {
             const prepared = await session.prepare(
               job,
@@ -202,14 +203,15 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
             );
             incrementalBaseSha = prepared.incrementalBaseSha;
             warnings.push(...prepared.warnings);
+            repositoryStage = "sandbox_diff";
             files = await session.getChangedFiles();
             repositoryAvailable = true;
-          } catch {
+          } catch (error) {
             warnings.push("SANDBOX_UNAVAILABLE_DIFF_ONLY_REVIEW");
             log("review.sandbox_unavailable", {
               reviewId: job.reviewId,
-              stage: "sandbox",
-              code: "SANDBOX_UNAVAILABLE",
+              stage: repositoryStage,
+              code: repositoryFailureCode(error),
             });
           }
           const result = await runReview({

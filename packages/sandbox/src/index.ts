@@ -12,11 +12,13 @@ import {
 import { SUPERVISOR_COMMAND, type CommandResult, type CommandSpec } from "./runner";
 import { EVIDENCE_RUNNER } from "./evidence";
 import { npmLockPackages, queryOsv } from "./osv";
+import type { ExecOptions } from "@cloudflare/sandbox";
+export { repositoryFailureCode } from "./diagnostics";
 
 export interface RepositorySandboxClient {
   exec(
     command: string,
-    options?: { stdin?: string; timeout?: number },
+    options?: Pick<ExecOptions, "env" | "timeout">,
   ): Promise<{ stdout: string; stderr: string; exitCode: number; success: boolean }>;
   beginPreparation(job: ReviewJob): Promise<void>;
   endPreparation(): Promise<void>;
@@ -89,7 +91,8 @@ export class RepositorySession {
       ...options,
     };
     const response = await this.sandbox.exec(SUPERVISOR_COMMAND, {
-      stdin: JSON.stringify(spec),
+      // SDK 0.12.9 forwards per-command env, but silently drops the documented stdin option.
+      env: { SHERPA_COMMAND_SPEC: JSON.stringify(spec) },
       timeout: spec.timeoutMs + 10000,
     });
     if (!response.success) throw new Error("SANDBOX_SUPERVISOR_FAILED");

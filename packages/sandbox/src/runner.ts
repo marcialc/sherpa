@@ -1,7 +1,7 @@
 /** A fixed supervisor, never a model-provided script. It bounds output before SDK buffering. */
 export const SUPERVISOR = String.raw`
 import json, os, selectors, signal, subprocess, sys, time, resource, ctypes
-spec = json.load(sys.stdin)
+spec = json.loads(os.environ.pop("SHERPA_COMMAND_SPEC"))
 limit = min(int(spec.get("maxBytes", 32768)), 524288)
 timeout = min(float(spec.get("timeoutMs", 20000)) / 1000, 180)
 env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp/sherpa-home", "CI": "true", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_LITERAL_PATHSPECS": "1", "COREPACK_ENABLE_PROJECT_SPEC": "0", "COREPACK_ENABLE_NETWORK": "0", "npm_config_ignore_scripts": "true", "npm_config_ignore_pnpmfile": "true", "npm_config_audit": "false", "npm_config_fund": "false", "npm_config_userconfig": "/dev/null", "YARN_IGNORE_PATH": "1"}

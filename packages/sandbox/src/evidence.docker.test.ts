@@ -30,7 +30,7 @@ else:
     payload = {"mode": "reproduction", "head": head, "source": spec["source"], "language": spec.get("language", "python"), "hypothesis": "read-only/no-network regression observation"}
     if spec["mode"] == "scanner": payload = {"mode": "scanner", "head": head, "paths": ["danger.py"]}
     command = {"argv": ["python3", "-I", "-c", spec["evidence"], json.dumps(payload)], "maxBytes": 32768, "timeoutMs": 15000 if spec["mode"] != "scanner" else 60000, "untrusted": True, "evidence": "scanner" if spec["mode"] == "scanner" else "reproduction"}
-    result = subprocess.run(["python3", "-I", "-c", spec["supervisor"]], input=json.dumps(command), capture_output=True, text=True, timeout=70)
+    result = subprocess.run(["python3", "-I", "-c", spec["supervisor"]], env={**os.environ, "SHERPA_COMMAND_SPEC": json.dumps(command)}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70)
     if result.returncode != 0: raise RuntimeError(result.stderr)
     print(result.stdout)
 `;
