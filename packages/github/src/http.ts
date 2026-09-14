@@ -70,12 +70,14 @@ export class GitHubApi {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     if (body && new TextEncoder().encode(body).byteLength > 512000)
       throw new GitHubError("GITHUB_REQUEST_TOO_LARGE");
+    // Workers rejects native fetch when called with this client as its receiver.
+    const fetcher = this.fetcher;
     let response: Response;
     try {
-      response = await this.fetcher(`https://api.github.com${path}`, {
+      response = await fetcher(`https://api.github.com${path}`, {
         method,
         body,
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(15000),
         headers: {
           Accept: "application/vnd.github+json",

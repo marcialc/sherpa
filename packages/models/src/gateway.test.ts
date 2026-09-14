@@ -49,7 +49,7 @@ describe("Cloudflare AI Gateway single-token inference", () => {
       expect(headers.get("cf-aig-gateway-id")).toBe(gateway.gatewayId);
       expect(headers.get("x-api-key")).toBeNull();
       expect(headers.get("anthropic-version")).toBeNull();
-      expect(init!.redirect).toBe("error");
+      expect(init!.redirect).toBe("manual");
       expect(init!.body).not.toContain(gateway.apiToken);
       const body = JSON.parse(init!.body as string);
       expect(body).toMatchObject({
@@ -121,20 +121,26 @@ describe("Cloudflare AI Gateway single-token inference", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("sanitizes gateway error bodies and does not require fallback native credentials", async () => {
-    const send = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(new Response(`private source ${gateway.apiToken}`, { status: 403 }));
-    const provider = createProviderRegistry({
-      cloudflareGateway: gateway,
-      fetch: send,
-    }).cloudflare!;
-    await expect(provider.complete(request)).rejects.toMatchObject({
-      message: "PROVIDER_HTTP_403",
-      retryable: false,
-    });
-    expect(send).toHaveBeenCalledTimes(1);
-  });
+  it.each([302, 307, 403])(
+    "rejects HTTP %i without exposing error bodies or forwarding credentials",
+    async (status) => {
+      const send = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(`private source ${gateway.apiToken}`, {
+          status,
+          headers: { location: "https://other.example/token" },
+        }),
+      );
+      const provider = createProviderRegistry({
+        cloudflareGateway: gateway,
+        fetch: send,
+      }).cloudflare!;
+      await expect(provider.complete(request)).rejects.toMatchObject({
+        message: `PROVIDER_HTTP_${status}`,
+        retryable: false,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("fails closed if a gateway returns a native provider shape instead of normalized chat usage", async () => {
     const send = vi.fn<typeof fetch>().mockResolvedValue(

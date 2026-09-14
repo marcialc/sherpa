@@ -67,7 +67,7 @@ export async function queryOsv(
   try {
     const response = await fetcher("https://api.osv.dev/v1/querybatch", {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       signal: abort.signal,
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({

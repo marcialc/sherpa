@@ -61,11 +61,13 @@ export class GitHubUserOAuth {
   async exchange(code: string, redirectUri: string): Promise<string> {
     const parsedCode = oauthCodeSchema.parse(code);
     const parsedRedirect = redirectUriSchema.parse(redirectUri);
+    // Workers rejects native fetch when called with this client as its receiver.
+    const fetcher = this.fetcher;
     let response: Response;
     try {
-      response = await this.fetcher("https://github.com/login/oauth/access_token", {
+      response = await fetcher("https://github.com/login/oauth/access_token", {
         method: "POST",
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(15000),
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({

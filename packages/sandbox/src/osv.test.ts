@@ -49,7 +49,7 @@ describe("trusted OSV evidence transport", () => {
     const result = await queryOsv([{ name: "lodash", version: "4.17.15" }], fetcher);
     const [url, init] = fetcher.mock.calls[0]!;
     expect(url).toBe("https://api.osv.dev/v1/querybatch");
-    expect(init).toMatchObject({ method: "POST", redirect: "error" });
+    expect(init).toMatchObject({ method: "POST", redirect: "manual" });
     expect(new Headers(init!.headers).get("authorization")).toBeNull();
     expect(JSON.parse(init!.body as string)).toEqual({
       queries: [{ package: { name: "lodash", ecosystem: "npm" }, version: "4.17.15" }],
@@ -59,6 +59,18 @@ describe("trusted OSV evidence transport", () => {
       incomplete: true,
     });
   });
+  it.each([302, 307])("rejects HTTP %i without following the redirect", async (status) => {
+    const fetcher = vi.fn<typeof fetch>(
+      async () =>
+        new Response(null, { status, headers: { location: "https://other.example/query" } }),
+    );
+    await expect(queryOsv([{ name: "x", version: "1.0.0" }], fetcher)).rejects.toThrow(
+      "OSV_UNAVAILABLE",
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![1]?.redirect).toBe("manual");
+  });
+
   it("rejects malformed and oversized responses while canceling the stream", async () => {
     const packages = [{ name: "x", version: "1.0.0" }];
     await expect(queryOsv(packages, async () => Response.json({ results: [] }))).rejects.toThrow(

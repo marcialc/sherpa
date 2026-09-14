@@ -20,7 +20,7 @@ describe("GitHub user OAuth", () => {
     const fetch = vi.fn<Fetcher>(async (input, init) => {
       const url = String(input);
       if (url === "https://github.com/login/oauth/access_token") {
-        expect(init?.redirect).toBe("error");
+        expect(init?.redirect).toBe("manual");
         const body = JSON.parse(String(init?.body)) as Record<string, string>;
         expect(body.code).toBe("oauth-code-1");
         expect(JSON.stringify(body)).not.toContain("\n");

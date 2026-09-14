@@ -194,7 +194,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
         try {
           const response = await send(endpoint, {
             method: "POST",
-            redirect: "error",
+            redirect: "manual",
             signal: controller.signal,
             headers:
               name === "cloudflare"

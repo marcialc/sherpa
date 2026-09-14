@@ -225,7 +225,7 @@ describe("GitHub App authentication", () => {
       };
       expect(decoded.iss).toBe("123");
       expect(decoded.exp - decoded.iat).toBeLessThanOrEqual(600);
-      expect(init?.redirect).toBe("error");
+      expect(init?.redirect).toBe("manual");
       if (String(input).endsWith("/installation"))
         return json({ id: 17, app_id: 123, suspended_at: null });
       if (String(input).endsWith("/access_tokens")) {

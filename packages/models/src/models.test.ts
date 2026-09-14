@@ -57,7 +57,7 @@ describe("provider trust and protocol boundaries", () => {
     expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 10, cachedTokens: 40 });
     const [url, init] = send.mock.calls[0]!;
     expect(url).toBe("https://api.openai.com/v1/chat/completions");
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
     expect(JSON.parse(init!.body as string)).toMatchObject({
       store: false,
       max_completion_tokens: 100,
