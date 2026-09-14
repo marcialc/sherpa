@@ -38,8 +38,8 @@
     ],
   },
   "vars": {
-    "GITHUB_CLIENT_ID": "",
-    "PUBLIC_BASE_URL": "",
+    "GITHUB_CLIENT_ID": "Iv23ctpcCwugHpqyEz78",
+    "PUBLIC_BASE_URL": "https://sherpa.marcialandres06.workers.dev",
     "CLOUDFLARE_ACCOUNT_ID": "",
     "CLOUDFLARE_AI_GATEWAY_ID": "sherpa",
     "ROUTER_PROVIDER": "cloudflare",
