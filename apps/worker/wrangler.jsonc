@@ -1,0 +1,58 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sherpa",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "limits": { "cpu_ms": 300000 },
+  "workflows": [
+    { "binding": "REVIEW_WORKFLOW", "name": "sherpa-review", "class_name": "ReviewWorkflow" },
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "REVIEW_LEDGER", "class_name": "ReviewLedger" },
+      { "name": "REVIEW_SANDBOX", "class_name": "ReviewSandbox" },
+      { "name": "INSTALLATION_SETTINGS", "class_name": "InstallationSettings" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ReviewLedger", "ReviewSandbox"] },
+    { "tag": "v2", "new_sqlite_classes": ["InstallationSettings"] },
+  ],
+  "containers": [
+    {
+      "class_name": "ReviewSandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 10,
+    },
+  ],
+  "secrets": {
+    "required": [
+      "GITHUB_APP_ID",
+      "GITHUB_PRIVATE_KEY",
+      "GITHUB_WEBHOOK_SECRET",
+      "GITHUB_CLIENT_SECRET",
+      "SETUP_SESSION_SECRET",
+    ],
+  },
+  "vars": {
+    "GITHUB_CLIENT_ID": "",
+    "PUBLIC_BASE_URL": "",
+    "CLOUDFLARE_ACCOUNT_ID": "",
+    "CLOUDFLARE_AI_GATEWAY_ID": "sherpa",
+    "ROUTER_PROVIDER": "cloudflare",
+    "ROUTER_MODEL": "",
+    "SPECIALIST_PROVIDER": "cloudflare",
+    "SPECIALIST_MODEL": "",
+    "JUDGE_PROVIDER": "cloudflare",
+    "JUDGE_MODEL": "",
+    "MODEL_PRICING_JSON": "{}",
+    "ALLOWED_MODELS_JSON": "[]",
+    "MAX_REVIEW_COST_USD": "1.00",
+    "MAX_AGENT_CALLS": "18",
+    "MAX_REVIEW_DURATION_MS": "600000",
+    "ALLOW_REPOSITORY_VALIDATION": "false",
+  },
+}

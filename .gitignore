@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+dist/
+coverage/
+artifacts/evals/
+.dev.vars
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store

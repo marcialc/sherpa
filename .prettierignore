@@ -1,0 +1,5 @@
+pnpm-lock.yaml
+apps/worker/worker-configuration.d.ts
+node_modules
+dist
+.wrangler

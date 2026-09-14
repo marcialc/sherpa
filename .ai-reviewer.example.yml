@@ -1,0 +1,64 @@
+enabled: true
+
+review:
+  minimumSeverity: info
+  minimumConfidence: 0.8
+  maxComments: 10
+  reviewDrafts: false
+  findingLimits:
+    shouldFix: 5
+    warnings: 3
+    nits: 3
+
+agents:
+  correctness: true
+  security: true
+  performance: true
+  testing: true
+  types: true
+  lightweight: true
+
+routing:
+  docsOnly: skip
+  paths:
+    "src/auth/**": [security, correctness, testing]
+    "migrations/**": [correctness, security, performance]
+
+# Loaded from the immutable BASE commit. A PR cannot activate its own new rules.
+reviewRules:
+  - paths: ["src/auth/**"]
+    agents: [security, correctness]
+    instructions: >-
+      Trace user and tenant identity through route middleware and resource queries.
+      Verify authorization with a realistic cross-user request before reporting.
+  - paths: ["migrations/**"]
+    agents: [correctness, performance]
+    instructions: >-
+      Verify data preservation and compatibility during mixed-version rollout.
+      Check transaction and lock behavior against the configured database engine.
+  - paths: ["**/*.tsx"]
+    agents: [types, testing]
+    instructions: >-
+      Check component contracts and observable interaction failures. Account for
+      React escaping and the existing test helpers before proposing a defect.
+  - paths: ["tests/**"]
+    agents: [testing]
+    instructions: >-
+      Verify assertions exercise the intended behavior and fail for the relevant
+      regression. Missing coverage alone is not a finding.
+
+# Enroll existing BASE files explicitly; each applies only to its directory tree.
+instructionFiles: []
+
+budget:
+  maxUsdPerReview: 1
+  maxAgentCalls: 18
+  maxDurationMs: 600000
+
+validation:
+  enabled: false
+  installDependencies: false
+  tests: true
+  typecheck: true
+  lint: true
+  security: true

@@ -1,0 +1,17 @@
+{
+  "name": "@sherpa/sandbox",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cloudflare": "./src/cloudflare.ts"
+  },
+  "dependencies": {
+    "@sherpa/schemas": "workspace:*",
+    "@sherpa/github": "workspace:*",
+    "@cloudflare/sandbox": "0.12.9",
+    "zod": "^4.6.5"
+  }
+}

@@ -1,0 +1,27 @@
+# Service-owned evidence rules. Matches require baseline and contextual AI verification.
+rules:
+  - id: sherpa.javascript.dynamic-eval
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Dynamic evaluation requires checking whether attacker-controlled input reaches this call.
+    pattern: eval($INPUT)
+  - id: sherpa.javascript.tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: TLS certificate verification is disabled; verify runtime reachability and trust requirements.
+    pattern: "{..., rejectUnauthorized: false, ...}"
+  - id: sherpa.python.shell-command
+    languages: [python]
+    severity: WARNING
+    message: Shell execution requires checking whether untrusted input reaches the command.
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: os.system($COMMAND)
+  - id: sherpa.python.unsafe-deserialization
+    languages: [python]
+    severity: WARNING
+    message: Pickle deserialization requires verifying the provenance of the serialized data.
+    pattern-either:
+      - pattern: pickle.loads($INPUT, ...)
+      - pattern: pickle.load($INPUT, ...)

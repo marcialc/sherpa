@@ -1,0 +1,41 @@
+{
+  "name": "sherpa",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev --config apps/worker/wrangler.jsonc",
+    "deploy": "wrangler deploy --config apps/worker/wrangler.jsonc",
+    "build": "wrangler deploy --dry-run --outdir dist --config apps/worker/wrangler.jsonc",
+    "typegen": "wrangler types --config apps/worker/wrangler.jsonc apps/worker/worker-configuration.d.ts --strict-vars false",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "eval": "vitest run tests/evals packages/agents/src/policy.test.ts packages/agents/src/agents.test.ts",
+    "eval:live": "SHERPA_LIVE_EVAL=1 vitest run tests/evals/live.test.ts",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.9",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260914.1",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.2",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.131.1"
+  }
+}

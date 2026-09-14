@@ -1,0 +1,30 @@
+# Copy to .dev.vars in this directory; never commit the populated file.
+GITHUB_APP_ID=replace-with-app-id
+GITHUB_CLIENT_ID=replace-with-github-app-client-id
+GITHUB_CLIENT_SECRET=replace-with-github-app-client-secret
+GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nreplace-with-private-key\n-----END RSA PRIVATE KEY-----"
+GITHUB_WEBHOOK_SECRET=replace-with-random-webhook-secret
+SETUP_SESSION_SECRET=replace-with-32-plus-character-random-string
+PUBLIC_BASE_URL=https://sherpa.replace-with-subdomain.workers.dev
+
+# Reviews bill each GitHub App installation's own Cloudflare AI Gateway.
+# Do not put a review inference token here. Optional live evals may still
+# set CLOUDFLARE_* below.
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_AI_GATEWAY_ID=sherpa
+CLOUDFLARE_AI_GATEWAY_TOKEN=
+
+# Model IDs and prices must match your provider account. No paid models are
+# selected automatically. Override these locally or set wrangler.jsonc vars.
+ROUTER_PROVIDER=cloudflare
+ROUTER_MODEL=openai/replace-with-cheap-model-id
+SPECIALIST_PROVIDER=cloudflare
+SPECIALIST_MODEL=anthropic/replace-with-coding-model-id
+JUDGE_PROVIDER=cloudflare
+JUDGE_MODEL=openai/replace-with-judge-model-id
+MODEL_PRICING_JSON={}
+ALLOWED_MODELS_JSON=[]
+MAX_REVIEW_COST_USD=1.00
+MAX_AGENT_CALLS=18
+MAX_REVIEW_DURATION_MS=600000
+ALLOW_REPOSITORY_VALIDATION=false
