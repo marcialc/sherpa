@@ -67,7 +67,7 @@ export class GitHubUserOAuth {
     try {
       response = await fetcher("https://github.com/login/oauth/access_token", {
         method: "POST",
-        redirect: "manual",
+        redirect: "error",
         signal: AbortSignal.timeout(15000),
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({
