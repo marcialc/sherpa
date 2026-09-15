@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.jpg" alt="Sherpa, a mountain guide holding a code review checklist" width="180" />
+  <img src="logo.png" alt="Sherpa, a mountain guide holding a code review checklist" width="180" />
 </p>
 
 <h1 align="center">Sherpa</h1>
