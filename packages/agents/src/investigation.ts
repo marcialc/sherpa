@@ -21,6 +21,9 @@ export const strictToolRequestSchema = z
   )
   .transform((value) => toolRequestSchema.parse(value));
 const statement = z.string().trim().min(8).max(500);
+// Internal decision explanations are not published findings. Give them bounded
+// headroom so a useful explanation slightly over 500 characters cannot abort a review.
+const decisionReason = z.string().trim().min(8).max(1500);
 const id = z.string().min(1).max(100);
 export const hypothesisSchema = z
   .object({
@@ -47,8 +50,20 @@ export const hypothesisSchema = z
     "Invalid hypothesis range",
   );
 export type Hypothesis = z.infer<typeof hypothesisSchema>;
+/** Testing must retrieve repository context before making its first assessment. */
+export const analysisContextSchema = z
+  .object({
+    phase: z.literal("ANALYZE"),
+    hypotheses: z.array(hypothesisSchema).max(0),
+    requests: z.array(strictToolRequestSchema).min(1).max(2),
+  })
+  .strict();
 export const analysisResponseSchema = z
-  .object({ phase: z.literal("ANALYZE"), hypotheses: z.array(hypothesisSchema).max(3) })
+  .object({
+    phase: z.literal("ANALYZE"),
+    hypotheses: z.array(hypothesisSchema).max(3),
+    requests: z.array(strictToolRequestSchema).max(2).optional(),
+  })
   .strict();
 export const citationSchema = z
   .object({ evidenceId: id, quote: z.string().trim().min(4).max(500) })
@@ -72,7 +87,7 @@ const assessmentSchema = z
   .object({
     hypothesisId: id,
     decision: z.enum(["confirmed", "rejected", "needs-more-context"]),
-    reason: statement,
+    reason: decisionReason,
     checks: evidenceChecksSchema.optional(),
     suggestedFix: z.string().trim().min(8).max(1000).optional(),
     requests: z.array(strictToolRequestSchema).min(1).max(2).optional(),
@@ -111,7 +126,7 @@ export const judgeResponseSchema = z
           .object({
             candidateId: id,
             verdict: z.enum(["accept", "reject", "merge", "needs-more-context"]),
-            reason: statement,
+            reason: decisionReason,
             checks: evidenceChecksSchema.optional(),
             usefulness: statement.optional(),
             confidence: z.number().min(0).max(1).optional(),

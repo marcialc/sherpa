@@ -187,6 +187,7 @@ export class ReviewBudget {
     user: string;
     outputTokens: number;
     schema: z.ZodType<T>;
+    outputSchema?: Record<string, unknown>;
     preserve?: BudgetReserve;
     repairInvalidOutput?: boolean;
     onInvalidOutput?: (diagnostic: OutputDiagnostic) => void;
@@ -204,7 +205,10 @@ export class ReviewBudget {
     let repaired = false;
     for (let attempt = 0; ; attempt++) {
       // Reserve the complete correction prompt too; repairs cannot consume the judge reserve.
-      const inputBound = new TextEncoder().encode(system + user).byteLength + 1024;
+      const inputBound =
+        new TextEncoder().encode(
+          system + user + (args.outputSchema ? JSON.stringify(args.outputSchema) : ""),
+        ).byteLength + 1024;
       if (inputBound > 65000) throw new BudgetError("MODEL_INPUT_LIMIT");
       const ticket = this.reserve(args.ref, args.agent, inputBound, args.outputTokens, preserve);
       const attemptDiagnostic = (
@@ -248,6 +252,7 @@ export class ReviewBudget {
             user,
             maxOutputTokens: args.outputTokens,
             signal: controller.signal,
+            ...(args.outputSchema ? { outputSchema: args.outputSchema } : {}),
           }),
           timeout,
         ]);

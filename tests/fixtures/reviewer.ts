@@ -7,6 +7,7 @@ export type ReplayEnvelope = {
   untrustedHypotheses?: Hypothesis[];
   unverifiedCandidates?: VerifiedCandidate[];
   attestedEvidence?: EvidenceRecord[];
+  contextDiscoveryRequired?: boolean;
 };
 
 /** Scripted protocol helper, not a simulated quality evaluation or a model judge. */
@@ -69,6 +70,12 @@ export function replayResponse(
   },
 ): ModelResponse {
   const envelope = JSON.parse(request.user) as ReplayEnvelope;
+  if (envelope.contextDiscoveryRequired)
+    return modelResponse({
+      phase: "ANALYZE",
+      hypotheses: [],
+      requests: [{ tool: "readFile", path: options.relatedPath, startLine: 1, endLine: 60 }],
+    });
   if (envelope.phase === "ANALYZE")
     return modelResponse({ phase: "ANALYZE", hypotheses: [options.hypothesis] });
   const records = envelope.attestedEvidence ?? [];

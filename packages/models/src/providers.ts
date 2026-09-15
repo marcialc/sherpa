@@ -13,6 +13,7 @@ export type ModelRequest = {
   user: string;
   maxOutputTokens: number;
   signal: AbortSignal;
+  outputSchema?: Record<string, unknown>;
 };
 export type ModelResponse = { text: string; usage: TokenUsage; durationMs: number };
 export interface ModelProvider {
@@ -174,7 +175,16 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
             : {
                 model: request.model,
                 messages,
-                response_format: { type: "json_object" },
+                response_format: request.outputSchema
+                  ? {
+                      type: "json_schema",
+                      json_schema: {
+                        name: "sherpa_review",
+                        strict: true,
+                        schema: request.outputSchema,
+                      },
+                    }
+                  : { type: "json_object" },
                 ...(name === "openai" ||
                 (name === "cloudflare" &&
                   (request.model.startsWith("openai/") || request.model.startsWith("@cf/")))

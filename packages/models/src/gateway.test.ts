@@ -25,6 +25,23 @@ const completion = () =>
   });
 
 describe("Cloudflare AI Gateway single-token inference", () => {
+  it("sends strict structured output when the reviewer supplies a schema", async () => {
+    const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
+    const outputSchema = {
+      type: "object",
+      properties: { findings: { type: "array", items: { type: "string" } } },
+      required: ["findings"],
+      additionalProperties: false,
+    };
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      outputSchema,
+    });
+    expect(JSON.parse(send.mock.calls[0]![1]!.body as string).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "sherpa_review", strict: true, schema: outputSchema },
+    });
+  });
   it("calls GPT, Claude and Workers AI Kimi through the current REST endpoint with one token", async () => {
     const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
     const registry = createProviderRegistry({ cloudflareGateway: gateway, fetch: send });

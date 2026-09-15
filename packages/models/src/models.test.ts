@@ -333,6 +333,23 @@ describe("shared budget reservations", () => {
     ).rejects.toThrow("MODEL_INPUT_LIMIT");
     expect(complete).toHaveBeenCalledOnce();
   });
+
+  it("includes the structured output schema in input and spend reservations", async () => {
+    const complete = vi.fn<ModelProvider["complete"]>().mockResolvedValue(response("{}"));
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 4, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    await expect(
+      budget.invoke({
+        ...args,
+        provider: { complete },
+        outputSchema: { description: "x".repeat(65000) },
+      }),
+    ).rejects.toThrow("MODEL_INPUT_LIMIT");
+    expect(complete).not.toHaveBeenCalled();
+    expect(budget.cost().calls).toHaveLength(0);
+  });
   it("logs bounded schema paths without model-controlled keys or values", () => {
     const invalid = z
       .object({

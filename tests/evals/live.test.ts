@@ -24,6 +24,8 @@ function required(name: string): string {
 /** Count final judge decisions once even when a context retry revisits a candidate. */
 function observe(registry: ProviderRegistry) {
   const decisions = new Map<string, string>();
+  // Only enabled for the fixed, checked-in evaluation fixtures; never production PRs.
+  const trace: unknown[] = [];
   const providers: ProviderRegistry = {};
   for (const [provider, client] of Object.entries(registry)) {
     if (!client) continue;
@@ -35,6 +37,17 @@ function observe(registry: ProviderRegistry) {
           const body = JSON.parse(response.text) as {
             decisions?: { candidateId: string; verdict: string }[];
           };
+          if (process.env.SHERPA_EVAL_TRACE === "1") {
+            const input = JSON.parse(request.user) as { phase?: string; originalTask?: string };
+            trace.push({
+              agent:
+                /Domain: ([a-z]+)\./.exec(request.system)?.[1] ??
+                (request.system.includes("final judge") ? "judge" : "router"),
+              phase: input.phase,
+              correction: Boolean(input.originalTask),
+              output: body,
+            });
+          }
           for (const decision of body.decisions ?? []) {
             if (typeof decision.candidateId === "string" && typeof decision.verdict === "string")
               decisions.set(decision.candidateId, decision.verdict);
@@ -49,6 +62,7 @@ function observe(registry: ProviderRegistry) {
   }
   return {
     providers,
+    trace,
     counts: () => ({
       judgedCandidates: decisions.size,
       judgeRejections: [...decisions.values()].filter((decision) => decision === "reject").length,
@@ -104,6 +118,7 @@ describe.skipIf(!live)("paired live model evaluation (explicit opt-in)", () => {
       validation: { enabled: true, security: true, tests: false, typecheck: false, lint: false },
     });
     const runs: Record<"baseline" | "current", EvaluationRun[]> = { baseline: [], current: [] };
+    const traces: unknown[] = [];
     for (let repetition = 0; repetition < repetitions; repetition++) {
       for (let index = 0; index < fixtures.length; index++) {
         const fixture = fixtures[index]!;
@@ -114,10 +129,11 @@ describe.skipIf(!live)("paired live model evaluation (explicit opt-in)", () => {
             : (["baseline", "current"] as const);
         for (const version of order) {
           const observer = observe(providers);
+          const tools = fixtureTools(fixture);
           const started = performance.now();
           const result = await (version === "baseline" ? runBaseline : runReview)({
             context: fixtureContext(fixture),
-            tools: fixtureTools(fixture),
+            tools,
             config,
             models,
             providers: observer.providers,
@@ -130,6 +146,13 @@ describe.skipIf(!live)("paired live model evaluation (explicit opt-in)", () => {
             latencyMs: performance.now() - started,
             ...observer.counts(),
           });
+          if (process.env.SHERPA_EVAL_TRACE === "1")
+            traces.push({
+              version,
+              fixtureId: fixture.id,
+              responses: observer.trace,
+              tools: tools.calls,
+            });
           // Incremental report survives an interrupted comparison without exposing credentials/prompts.
           await mkdir("artifacts/evals", { recursive: true });
           const metrics = { baseline: measure(runs.baseline), current: measure(runs.current) };
@@ -143,6 +166,7 @@ describe.skipIf(!live)("paired live model evaluation (explicit opt-in)", () => {
                 pricing,
                 maxUsd,
                 repetitions,
+                ...(traces.length ? { traces } : {}),
                 ...metrics,
                 comparison: compareQuality(metrics.baseline, metrics.current),
                 runs: Object.fromEntries(

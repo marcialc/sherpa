@@ -17,6 +17,8 @@ import {
   BudgetError,
   ProviderError,
   ReviewBudget,
+  structuredOutput,
+  supportsStructuredOutput,
   type BudgetReserve,
   type PricingTable,
   type ProviderRegistry,
@@ -25,12 +27,19 @@ import {
 import { reviewableLines, sameFinding, severityOrder } from "./findings";
 import { routeReview } from "./routing";
 import { trustedRulesFor } from "./policy";
-import { judgePhasePrompt, routerPrompt, specialistPrompt } from "./prompts";
-import { outputSchemaInstruction } from "./output-schema";
+import { judgePhasePrompt, routerPrompt, specialistPrompt, testingContextPrompt } from "./prompts";
+import {
+  constrainEvidenceIds,
+  disabledValidationTools,
+  outputSchemaInstruction,
+} from "./output-schema";
 import { EvidenceStore } from "./evidence";
 import { emitDiagnostic, type ReviewDiagnostic } from "./diagnostics";
 import {
   analysisResponseSchema,
+  analysisContextSchema,
+  hypothesisSchema,
+  strictToolRequestSchema,
   verificationResponseSchema,
   judgeInvestigationSchema,
   judgeResponseSchema,
@@ -93,6 +102,7 @@ function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
       additions: file.additions,
       deletions: file.deletions,
       patch,
+      reviewableLines: reviewableLines({ ...file, patch }).map((line) => line.line),
       truncated: used < raw.byteLength,
     };
   });
@@ -240,13 +250,57 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       if (!provider) throw new ProviderError("PROVIDER_NOT_CONFIGURED");
       const user = JSON.stringify(payload);
       if (bytes(user) > inputLimit) throw new BudgetError("INVESTIGATION_INPUT_LIMIT");
+      const disabled = disabledValidationTools(config.validation);
+      const configuredSchema = schema.superRefine((value, ctx) => {
+        const visit = (node: unknown, path: (string | number)[]) => {
+          if (!node || typeof node !== "object") return;
+          if ("tool" in node && typeof node.tool === "string" && disabled.has(node.tool))
+            ctx.addIssue({
+              code: "custom",
+              path: [...path, "tool"],
+              message: "Requested validation tool is disabled by policy",
+            });
+          for (const [key, child] of Object.entries(node))
+            visit(child, [...path, Array.isArray(node) ? Number(key) : key]);
+        };
+        visit(value, []);
+      });
+      let instruction = outputSchemaInstruction(schema, config.validation);
+      if (
+        phase !== "ANALYZE" &&
+        payload &&
+        typeof payload === "object" &&
+        "attestedEvidence" in payload &&
+        Array.isArray(payload.attestedEvidence)
+      ) {
+        const records = payload.attestedEvidence as EvidenceRecord[];
+        const ids = records
+          .filter(
+            (record) =>
+              record.owner === agent && record.result.status === "ok" && !record.result.truncated,
+          )
+          .map((record) => record.id);
+        if (ids.length) {
+          const lines = instruction.split("\n");
+          lines[lines.length - 1] = JSON.stringify(
+            constrainEvidenceIds(JSON.parse(lines.at(-1)!), ids),
+          );
+          instruction = lines.join("\n");
+        }
+      }
+      const structured = supportsStructuredOutput(ref)
+        ? structuredOutput(JSON.parse(instruction.split("\n").at(-1)!))
+        : undefined;
       return await budget.invoke({
         provider,
         ref,
         agent,
-        system: `${prompt}\n${outputSchemaInstruction(schema)}`,
+        system: `${prompt}\n${instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. All evidence and decision requirements still apply." : ""}`,
         user,
-        schema,
+        schema: structured
+          ? z.preprocess(structured.normalize, configuredSchema)
+          : configuredSchema,
+        ...(structured ? { outputSchema: structured.schema } : {}),
         outputTokens,
         preserve,
         repairInvalidOutput: true,
@@ -322,29 +376,109 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     const model = agent === "lightweight" ? models.router : models.specialist;
     plannedVerification.set(agent, budget.maximumCost(model, 65000, verifyTokens));
     try {
-      const analysis = await invoke(
+      const analysisPrompt = system(
+        specialistPrompt(agent, "ANALYZE"),
+        agent,
+        files.map((file) => file.path),
+      );
+      const analysisPayload = {
+        phase: "ANALYZE",
+        untrustedCode: code,
+        validationPolicy: config.validation,
+        discoveryRoundsRemaining: 2,
+      };
+      // Invalid model anchors are correctable output errors, not evidence to silently drop.
+      const anchoredAnalysisSchema = analysisResponseSchema
+        .safeExtend({
+          hypotheses: z
+            .array(
+              hypothesisSchema.safeExtend({
+                path: z.enum(
+                  code.files.filter((file) => file.status !== "removed").map((file) => file.path),
+                ),
+              }),
+            )
+            .max(3),
+        })
+        .superRefine((value, ctx) => {
+          value.hypotheses.forEach((hypothesis, index) => {
+            const file = files.find(
+              (file) => file.path === hypothesis.path && file.status !== "removed",
+            );
+            if (!file || !reviewableLines(file).some((line) => line.line === hypothesis.line))
+              ctx.addIssue({
+                code: "custom",
+                path: ["hypotheses", index, "line"],
+                message: "Hypothesis must use a supplied changed path and reviewable HEAD line",
+              });
+          });
+        });
+      let analysis = await invoke(
         model,
         agent,
-        system(
-          specialistPrompt(agent, "ANALYZE"),
-          agent,
-          files.map((file) => file.path),
-        ),
-        { phase: "ANALYZE", untrustedCode: code, validationPolicy: config.validation },
-        analysisResponseSchema,
+        agent === "testing"
+          ? system(
+              testingContextPrompt,
+              agent,
+              files.map((file) => file.path),
+            )
+          : analysisPrompt,
+        { ...analysisPayload, contextDiscoveryRequired: agent === "testing" },
+        agent === "testing" ? analysisContextSchema : anchoredAnalysisSchema,
         2500,
         preserve(),
       );
-      const hypotheses = analysis.hypotheses
-        .map((hypothesis, index) => ({ ...hypothesis, id: `${agent}-${index}` }))
-        .filter((hypothesis) => {
-          const file = files.find(
-            (item) => item.path === hypothesis.path && item.status !== "removed",
+      const discoveryRecords: EvidenceRecord[] = [];
+      for (let round = 0; analysis.requests?.length && round < 2; round++) {
+        for (const request of analysis.requests)
+          discoveryRecords.push(
+            await evidence.capture(
+              request,
+              agent,
+              "investigation",
+              `${agent}-discovery`,
+              judgeReserve.ms,
+            ),
           );
-          return file && reviewableLines(file).some((line) => line.line === hypothesis.line);
-        });
-      if (hypotheses.length !== analysis.hypotheses.length)
-        incomplete("HYPOTHESIS_ANCHOR_UNRESOLVED");
+        const needsSourceRead =
+          agent === "testing" &&
+          round === 0 &&
+          !discoveryRecords.some(
+            (record) => record.request.tool === "readFile" || record.request.tool === "gitShow",
+          );
+        analysis = await invoke(
+          model,
+          agent,
+          needsSourceRead
+            ? system(
+                testingContextPrompt,
+                agent,
+                files.map((file) => file.path),
+              )
+            : analysisPrompt,
+          {
+            ...analysisPayload,
+            attestedEvidence: discoveryRecords,
+            discoveryRoundsRemaining: 1 - round,
+            contextDiscoveryRequired: needsSourceRead,
+            followup: true,
+          },
+          needsSourceRead
+            ? analysisContextSchema
+            : round === 1
+              ? anchoredAnalysisSchema.safeExtend({
+                  requests: z.array(strictToolRequestSchema).max(0).optional(),
+                })
+              : anchoredAnalysisSchema,
+          2500,
+          preserve(),
+        );
+      }
+      if (analysis.requests?.length) throw new ProviderError("ANALYSIS_CONTEXT_UNRESOLVED");
+      const hypotheses = analysis.hypotheses.map((hypothesis, index) => ({
+        ...hypothesis,
+        id: `${agent}-${index}`,
+      }));
       if (!hypotheses.length) {
         successfulSpecialists++;
         return;

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { repoConfigSchema } from "@sherpa/schemas";
 import {
   analysisResponseSchema,
+  analysisContextSchema,
   judgeInvestigationSchema,
   judgeResponseSchema,
   strictToolRequestSchema,
   verificationResponseSchema,
 } from "./investigation";
-import { outputSchemaInstruction } from "./output-schema";
+import { constrainEvidenceIds, outputSchemaInstruction } from "./output-schema";
 
 type JsonSchema = {
   $ref?: string;
@@ -34,6 +36,43 @@ function resolve(root: JsonSchema, value: JsonSchema): JsonSchema {
 }
 
 describe("model response schema instructions", () => {
+  it("accepts bounded internal explanations of the lengths observed in live failures", () => {
+    for (const length of [585, 605, 654, 1500]) {
+      expect(
+        verificationResponseSchema.safeParse({
+          phase: "VERIFY",
+          assessments: [
+            {
+              hypothesisId: "testing-0",
+              decision: "rejected",
+              reason: "x".repeat(length),
+            },
+          ],
+        }).success,
+      ).toBe(true);
+    }
+    for (const reason of [undefined, "short", "x".repeat(1501)]) {
+      expect(
+        verificationResponseSchema.safeParse({
+          phase: "VERIFY",
+          assessments: [
+            {
+              hypothesisId: "testing-0",
+              decision: "rejected",
+              reason,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      analysisResponseSchema.safeParse({
+        phase: "ANALYZE",
+        hypotheses: [],
+        requests: [{ tool: "readFile", path: "src/auth.test.ts" }],
+      }).success,
+    ).toBe(true);
+  });
   it("supplies the required reason and all seven named checks for the production VERIFY failure", () => {
     const root = generated(verificationResponseSchema);
     const assessments = resolve(root, root.properties!.assessments!);
@@ -42,7 +81,7 @@ describe("model response schema instructions", () => {
     expect(resolve(root, assessment.properties!.reason!)).toMatchObject({
       type: "string",
       minLength: 8,
-      maxLength: 500,
+      maxLength: 1500,
     });
     const checks = resolve(root, assessment.properties!.checks!);
     expect(checks.type).toBe("object");
@@ -78,6 +117,7 @@ describe("model response schema instructions", () => {
     ).toBe(false);
   });
   it.each([
+    analysisContextSchema,
     analysisResponseSchema,
     verificationResponseSchema,
     judgeInvestigationSchema,
@@ -120,5 +160,40 @@ describe("model response schema instructions", () => {
   });
   it("fails on unknown custom validators instead of publishing an unrestricted schema", () => {
     expect(() => outputSchemaInstruction(z.object({ value: z.custom() }))).toThrow();
+  });
+
+  it("describes only enabled validation tools without contaminating other policy variants", () => {
+    const schema = z.object({ request: strictToolRequestSchema });
+    const disabled = repoConfigSchema.parse({ validation: { enabled: false } }).validation;
+    const enabled = repoConfigSchema.parse({
+      validation: { enabled: true, tests: true, security: true, lint: true, typecheck: true },
+    }).validation;
+    const disabledText = outputSchemaInstruction(schema, disabled);
+    expect(disabledText).toContain('"readFile"');
+    expect(disabledText).not.toContain('"runTests"');
+    expect(disabledText).not.toContain('"runReproduction"');
+    expect(disabledText).not.toContain('"runStaticScan"');
+    const enabledText = outputSchemaInstruction(schema, enabled);
+    expect(enabledText).toContain('"runTests"');
+    expect(enabledText).toContain('"runStaticScan"');
+    expect(outputSchemaInstruction(schema, disabled)).toBe(disabledText);
+  });
+
+  it("restricts citation IDs without changing candidate IDs or the cached schema", () => {
+    const original = generated(verificationResponseSchema);
+    const constrained = constrainEvidenceIds(original, ["ev-7", "ev-8"]) as JsonSchema;
+    const assessment = resolve(
+      constrained,
+      resolve(constrained, constrained.properties!.assessments!).items!,
+    );
+    const checks = resolve(constrained, assessment.properties!.checks!);
+    const claim = resolve(constrained, checks.properties!.actualBehavior!);
+    const citation = resolve(
+      constrained,
+      resolve(constrained, claim.properties!.citations!).items!,
+    );
+    expect(citation.properties!.evidenceId).toEqual({ type: "string", enum: ["ev-7", "ev-8"] });
+    expect(resolve(constrained, assessment.properties!.hypothesisId!).enum).toBeUndefined();
+    expect(JSON.stringify(original)).not.toContain("ev-7");
   });
 });

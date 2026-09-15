@@ -1,4 +1,5 @@
 import { Script } from "node:vm";
+import assert from "node:assert/strict";
 import { ModuleKind, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 import { evalFixtures } from "./fixtures";
@@ -15,6 +16,33 @@ function exportsFor(id: string, revision: "base" | "head", globals: Record<strin
 }
 
 describe("evaluation ground truth", () => {
+  it("reproduces the OAuth mock assertion failure and its safe counterpart with baseline controls", async () => {
+    for (const id of ["oauth-redirect-test-regression", "oauth-redirect-compatible-test"]) {
+      const fixture = evalFixtures.find((item) => item.id === id)!;
+      for (const revision of ["base", "head"] as const) {
+        const exchange = exportsFor(id, revision).exchange;
+        const exports: { testExchange?: () => Promise<void> } = {};
+        const compiled = transpileModule(fixture.head["src/oauth.test.js"]!, {
+          compilerOptions: { module: ModuleKind.CommonJS, esModuleInterop: true },
+        });
+        new Script(compiled.outputText).runInNewContext(
+          {
+            exports,
+            require: (name: string) => {
+              if (name === "node:assert/strict") return assert;
+              if (name === "./oauth.js") return { exchange };
+              throw new Error("Unexpected fixture import");
+            },
+          },
+          { timeout: 1000 },
+        );
+        const result = exports.testExchange!();
+        if (id === "oauth-redirect-test-regression" && revision === "head")
+          await expect(result).rejects.toThrow("GITHUB_OAUTH_NETWORK_ERROR");
+        else await expect(result).resolves.toBeUndefined();
+      }
+    }
+  });
   it("reproduces a PR-introduced arithmetic failure with a baseline control", () => {
     expect(exportsFor("arithmetic-regression", "base").add!(5, 2)).toBe(7);
     expect(exportsFor("arithmetic-regression", "head").add!(5, 2)).toBe(3);

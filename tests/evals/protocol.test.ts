@@ -8,8 +8,6 @@ import { evalFixtures, type EvalFixture } from "./fixtures";
 import { fixtureContext, fixtureTools } from "./repository";
 import { measure, type EvaluationRun } from "./metrics";
 import { modelResponse, replayResponse } from "../fixtures/reviewer";
-import { outputSchemaInstruction } from "../../packages/agents/src/output-schema";
-import { verificationResponseSchema } from "../../packages/agents/src/investigation";
 
 function proposal(fixture: EvalFixture): {
   hypothesis: Hypothesis;
@@ -106,7 +104,7 @@ describe("paired adversarial protocol replay", () => {
           };
           if (envelope.originalTask) {
             corrections++;
-            expect(request.system).toContain(outputSchemaInstruction(verificationResponseSchema));
+            expect(request.system).toContain('"required":["hypothesisId","decision","reason"]');
             expect(JSON.parse(request.user).validationDetails).toEqual([
               {
                 path: "assessments.0.reason",
@@ -129,7 +127,7 @@ describe("paired adversarial protocol replay", () => {
           }
           const result = replayResponse(request, { ...trace, forgeDisproof });
           if (envelope.untrustedHypotheses) {
-            expect(request.system).toContain(outputSchemaInstruction(verificationResponseSchema));
+            expect(request.system).toContain('"required":["hypothesisId","decision","reason"]');
             const invalid = JSON.parse(result.text) as {
               assessments: { reason?: string; checks: Record<string, unknown> | unknown[] }[];
             };

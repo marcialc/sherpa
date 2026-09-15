@@ -82,6 +82,44 @@ function fixture(options: {
 }
 
 export const evalFixtures: EvalFixture[] = [
+  fixture({
+    id: "oauth-redirect-test-regression",
+    path: "src/oauth.js",
+    before:
+      "export async function exchange(fetcher) {\n  try {\n    const response = await fetcher('https://github.com/login/oauth/access_token', { redirect: 'manual' });\n    return response.token;\n  } catch {\n    throw new Error('GITHUB_OAUTH_NETWORK_ERROR');\n  }\n}",
+    after:
+      "export async function exchange(fetcher) {\n  try {\n    const response = await fetcher('https://github.com/login/oauth/access_token', { redirect: 'error' });\n    return response.token;\n  } catch {\n    throw new Error('GITHUB_OAUTH_NETWORK_ERROR');\n  }\n}",
+    support: {
+      "src/oauth.test.js":
+        "import assert from 'node:assert/strict';\nimport { exchange } from './oauth.js';\nexport async function testExchange() {\n  const token = await exchange(async (_url, init) => {\n    assert.equal(init.redirect, 'manual');\n    return { token: 'user-token' };\n  });\n  assert.equal(token, 'user-token');\n}",
+      ".github/workflows/ci.yml":
+        "name: Required tests\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test",
+    },
+    bug: {
+      lines: [3],
+      severity: "high",
+      titlePattern: "test|assert|mock|redirect|CI",
+      description:
+        "The unchanged OAuth test mock still asserts redirect:manual. The changed error option throws that assertion and the catch hides it as GITHUB_OAUTH_NETWORK_ERROR, breaking the existing test suite.",
+    },
+    explanation:
+      "The defect is the deterministic test/implementation mismatch, not a redirect vulnerability. Update the test with the intended redirect policy; do not dismiss it as missing coverage.",
+  }),
+  fixture({
+    id: "oauth-redirect-compatible-test",
+    path: "src/oauth.js",
+    before:
+      "export async function exchange(fetcher) {\n  return fetcher('https://github.com/login/oauth/access_token', { redirect: 'manual' });\n}",
+    after:
+      "export async function exchange(fetcher) {\n  return fetcher('https://github.com/login/oauth/access_token', { redirect: 'error' });\n}",
+    support: {
+      "src/oauth.test.js":
+        "import assert from 'node:assert/strict';\nimport { exchange } from './oauth.js';\nexport async function testExchange() {\n  await exchange(async (_url, init) => {\n    assert.ok(['manual', 'error'].includes(init.redirect));\n    return { token: 'user-token' };\n  });\n}",
+    },
+    clean: true,
+    explanation:
+      "Both redirect policies prevent following redirects and the unchanged test accepts both. Do not report a test failure just because a fetch option changed.",
+  }),
   {
     id: "deleted-authorization-guard",
     kind: "bug",

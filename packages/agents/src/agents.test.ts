@@ -349,6 +349,177 @@ describe("verified investigation protocol", () => {
     expect(options.tools.execute).not.toHaveBeenCalled();
   });
 
+  it("treats an empty optional discovery list as no request", async () => {
+    const options = singleReviewer(
+      fixture(() => modelResponse({ phase: "ANALYZE", hypotheses: [], requests: [] })),
+    );
+    expect((await runReview(options)).outcome).toBe("PASS");
+    expect(options.tools.execute).not.toHaveBeenCalled();
+  });
+
+  it("corrects an unchanged-file anchor before verifying a hypothesis", async () => {
+    const options = singleReviewer(
+      fixture((request) => {
+        if (request.system.includes("OUTPUT FORMAT CORRECTION")) {
+          expect(request.user).toContain("hypotheses.0.path");
+          return modelResponse({ phase: "ANALYZE", hypotheses: [hypothesis] });
+        }
+        if (JSON.parse(request.user).phase === "ANALYZE")
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [{ ...hypothesis, path: relatedPath }],
+          });
+        return replayResponse(request, { hypothesis, relatedPath });
+      }),
+    );
+    const result = await runReview(options);
+    expect(result.outcome).toBe("NEEDS_ATTENTION");
+    expect(result.coverageComplete).toBe(true);
+    expect(result.findings[0]).toMatchObject({ path: file.path, line: hypothesis.line });
+  });
+
+  it("corrects disabled validation requests before attempting repository tools", async () => {
+    const options = singleReviewer(
+      fixture((request) => {
+        if (request.system.includes("OUTPUT FORMAT CORRECTION")) {
+          expect(request.user).toContain("VALIDATION_TOOL_DISABLED_USE_SOURCE_READ");
+          return modelResponse({ phase: "ANALYZE", hypotheses: [hypothesis] });
+        }
+        if (JSON.parse(request.user).phase === "ANALYZE")
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [{ ...hypothesis, verificationRequests: [{ tool: "runTests" }] }],
+          });
+        return replayResponse(request, { hypothesis, relatedPath });
+      }),
+    );
+    options.config.validation.enabled = false;
+    const result = await runReview(options);
+    expect(result.outcome).toBe("NEEDS_ATTENTION");
+    expect(result.coverageComplete).toBe(true);
+    expect(options.tools.execute.mock.calls.every(([request]) => request.tool !== "runTests")).toBe(
+      true,
+    );
+  });
+
+  it("lets a specialist inspect unchanged context before proposing a bug for independent judgment", async () => {
+    const options = singleReviewer(
+      fixture((request) => {
+        const envelope = JSON.parse(request.user) as ReplayEnvelope & { followup?: boolean };
+        if (envelope.phase === "ANALYZE" && !envelope.followup)
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [],
+            requests: [{ tool: "readFile", path: relatedPath, startLine: 1, endLine: 60 }],
+          });
+        if (envelope.phase === "ANALYZE") {
+          expect(envelope.attestedEvidence).toEqual([
+            expect.objectContaining({
+              hypothesisId: "correctness-discovery",
+              owner: "correctness",
+              result: expect.objectContaining({ status: "ok", fileExists: true }),
+            }),
+          ]);
+          expect(request.user).not.toContain("private PR explanation");
+        }
+        return replayResponse(request, { hypothesis, relatedPath });
+      }),
+    );
+    options.context = { ...context, body: "private PR explanation" };
+    const result = await runReview(options);
+    expect(result.outcome).toBe("NEEDS_ATTENTION");
+    expect(result.coverageComplete).toBe(true);
+    expect(result.cost.calls).toHaveLength(5);
+    expect(result.cost.calls.filter((call) => call.agent === "judge")).toHaveLength(2);
+  });
+
+  it("does not approve or keep spending when discovery remains unresolved", async () => {
+    const options = singleReviewer(
+      fixture(() =>
+        modelResponse({
+          phase: "ANALYZE",
+          hypotheses: [],
+          requests: [{ tool: "readFile", path: relatedPath }],
+        }),
+      ),
+    );
+    const result = await runReview(options);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+    expect(result.warnings).toContain("CORRECTNESS_MODEL_INVALID_SCHEMA");
+    expect(result.cost.calls).toHaveLength(4);
+    expect(options.tools.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires testing to retrieve context before it can return a clean review", async () => {
+    const options = singleReviewer(
+      fixture(() => modelResponse({ phase: "ANALYZE", hypotheses: [] })),
+    );
+    options.config.agents.correctness = false;
+    options.config.agents.testing = true;
+    const result = await runReview(options);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+    expect(result.warnings).toContain("TESTING_MODEL_INVALID_SCHEMA");
+  });
+
+  it("lets testing locate unchanged tests and then read them before assessing the diff", async () => {
+    const options = singleReviewer(
+      fixture((request) => {
+        const data = JSON.parse(request.user) as ReplayEnvelope & {
+          discoveryRoundsRemaining: number;
+          untrustedCode: { files: Array<{ reviewableLines: number[] }> };
+        };
+        expect(data.untrustedCode.files[0]!.reviewableLines).toContain(hypothesis.line);
+        if (data.contextDiscoveryRequired && data.discoveryRoundsRemaining === 2)
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [],
+            requests: [{ tool: "search", query: "authorized" }],
+          });
+        if (data.discoveryRoundsRemaining === 1) {
+          expect(data.attestedEvidence).toHaveLength(1);
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [],
+            requests: [{ tool: "readFile", path: relatedPath, startLine: 1, endLine: 60 }],
+          });
+        }
+        expect(data.discoveryRoundsRemaining).toBe(0);
+        expect(data.attestedEvidence).toHaveLength(2);
+        return modelResponse({ phase: "ANALYZE", hypotheses: [] });
+      }),
+    );
+    options.config.agents.correctness = false;
+    options.config.agents.testing = true;
+    const result = await runReview(options);
+    expect(result.outcome).toBe("PASS");
+    expect(result.cost.calls).toHaveLength(3);
+    expect(options.tools.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not treat failed discovery as a clean review", async () => {
+    const options = singleReviewer(
+      fixture((request) =>
+        JSON.parse(request.user).followup
+          ? modelResponse({ phase: "ANALYZE", hypotheses: [] })
+          : modelResponse({
+              phase: "ANALYZE",
+              hypotheses: [],
+              requests: [{ tool: "readFile", path: relatedPath }],
+            }),
+      ),
+    );
+    options.tools.execute.mockResolvedValue({
+      tool: "readFile",
+      status: "failed",
+      output: "TOOL_FAILED",
+      truncated: false,
+      durationMs: 0,
+    });
+    const result = await runReview(options);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+    expect(result.coverageComplete).toBe(false);
+  });
+
   it("skips documentation without sending it to any model", async () => {
     const options = fixture();
     options.files = [{ ...file, path: "README.md" }];
