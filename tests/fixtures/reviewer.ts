@@ -1,11 +1,17 @@
 import type { AgentName } from "@sherpa/schemas";
-import type { EvidenceChecks, EvidenceRecord, Hypothesis, VerifiedCandidate } from "@sherpa/agents";
+import type { EvidenceChecks, EvidenceRecord, Hypothesis } from "@sherpa/agents";
 import type { ModelRequest, ModelResponse } from "@sherpa/models";
 
 export type ReplayEnvelope = {
   phase: "ANALYZE" | "VERIFY" | "DECIDE";
   untrustedHypotheses?: Hypothesis[];
-  unverifiedCandidates?: VerifiedCandidate[];
+  unverifiedCandidates?: {
+    id: string;
+    hypothesis: Pick<
+      Hypothesis,
+      "id" | "title" | "path" | "line" | "category" | "disproofQuestion" | "verificationRequests"
+    >;
+  }[];
   attestedEvidence?: EvidenceRecord[];
   contextDiscoveryRequired?: boolean;
 };
@@ -122,7 +128,7 @@ export function replayResponse(
       verdict: "accept",
       reason:
         "Independent repository reads establish the failure and rule out the proposed mitigation.",
-      checks: checksFor(candidate.hypothesis, records, "judge"),
+      checks: checksFor({ ...options.hypothesis, ...candidate.hypothesis }, records, "judge"),
       usefulness:
         "An engineer should restore the broken contract before users encounter the demonstrated failure.",
       confidence: 0.98,

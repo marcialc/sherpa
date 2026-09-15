@@ -704,6 +704,207 @@ describe("verified investigation protocol", () => {
     expect(options.tools.execute).toHaveBeenCalledTimes(2);
   });
 
+  it("recovers the production 6.9/8.8 KB discovery searches after reading the matching source", async () => {
+    const options = singleReviewer(
+      fixture((request) => {
+        const input = JSON.parse(request.user);
+        if (input.phase === "ANALYZE" && !input.followup)
+          return modelResponse({
+            phase: "ANALYZE",
+            hypotheses: [],
+            requests: [
+              { tool: "search", query: "first" },
+              { tool: "search", query: "second" },
+            ],
+          });
+        return replayResponse(request, { hypothesis, relatedPath });
+      }),
+    );
+    const original = options.tools.execute.getMockImplementation()!;
+    options.tools.execute.mockImplementation(async (request) =>
+      request.tool === "search"
+        ? {
+            tool: request.tool,
+            status: "ok",
+            truncated: false,
+            durationMs: 0,
+            output: `${headSha}:${relatedPath}:1: matching caller\n`.padEnd(
+              request.query === "first" ? 6884 : 8804,
+              "x",
+            ),
+          }
+        : original(request),
+    );
+    const diagnostics: unknown[] = [];
+    options.onDiagnostic = (event) => diagnostics.push(event);
+    const result = await runReview(options);
+    expect(result.coverageComplete).toBe(true);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.priority).toBe("must_fix");
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        event: "review.tool_completed",
+        purpose: "discovery",
+        truncated: true,
+        contextTruncated: true,
+      }),
+    );
+    expect(result.findings[0]?.evidence.join(" ")).not.toContain("matching caller");
+  });
+
+  it.each([
+    "none",
+    "unrelated",
+    "other-owner",
+    "baseline",
+    "truncated",
+    "absent",
+    "wrong-range",
+    "empty",
+  ] as const)(
+    "keeps a partial discovery search unresolved with %s source evidence",
+    async (mode) => {
+      const options = singleReviewer(fixture());
+      const original = options.tools.execute.getMockImplementation()!;
+      options.tools.execute.mockImplementation(async (request) =>
+        request.tool === "search"
+          ? {
+              tool: request.tool,
+              status: "ok",
+              output: `${relatedPath}:1: match\n`.padEnd(6884, "x"),
+              truncated: false,
+              durationMs: 0,
+            }
+          : {
+              ...(await original(request)),
+              ...(mode === "truncated" ? { truncated: true } : {}),
+              ...(mode === "absent" ? { fileExists: false } : {}),
+              ...(mode === "empty" ? { output: "" } : {}),
+            },
+      );
+      const incomplete = vi.fn();
+      const records = new EvidenceStore(
+        options.tools,
+        new ReviewBudget({ maxUsd: 1, maxCalls: 1, deadline: Date.now() + 1000 }, pricing),
+        options.config,
+        incomplete,
+      );
+      await records.capture(
+        { tool: "search", query: "match" },
+        "correctness",
+        "discovery",
+        "correctness-discovery",
+      );
+      expect(incomplete).not.toHaveBeenCalled();
+      if (mode !== "none")
+        await records.capture(
+          mode === "baseline"
+            ? { tool: "gitShow", revision: "previous", path: relatedPath }
+            : {
+                tool: "readFile",
+                path: mode === "unrelated" ? file.path : relatedPath,
+                ...(mode === "wrong-range" ? { startLine: 2 } : {}),
+              },
+          mode === "other-owner" ? "judge" : "correctness",
+          "investigation",
+          "correctness-0",
+        );
+      expect(records.hasUnresolvedDiscovery("correctness")).toBe(true);
+    },
+  );
+
+  it.each(["testing-0", "other-candidate"])(
+    "reuses only matching candidate context for a judge search (%s)",
+    async (hypothesisId) => {
+      const options = fixture();
+      const original = options.tools.execute.getMockImplementation()!;
+      options.tools.execute.mockImplementation(async (request) =>
+        request.tool === "search"
+          ? {
+              tool: "search",
+              status: "ok",
+              output: `docs/guide.md:1: ${"x".repeat(20000)}\n${file.path}:1: match`,
+              truncated: false,
+              durationMs: 0,
+            }
+          : original(request),
+      );
+      const incomplete = vi.fn();
+      const records = new EvidenceStore(
+        options.tools,
+        new ReviewBudget({ maxUsd: 1, maxCalls: 1, deadline: Date.now() + 1000 }, pricing),
+        options.config,
+        incomplete,
+      );
+      await records.capture({ tool: "readFile", path: file.path }, "judge", "head", hypothesisId);
+      const search = await records.capture(
+        { tool: "search", query: "match" },
+        "judge",
+        "investigation",
+        "testing-0",
+      );
+      expect(search.result.truncated).toBe(true);
+      expect(search.result.output).toContain(`${file.path}:1:`);
+      expect(incomplete).not.toHaveBeenCalled();
+      expect(records.hasUnresolvedDiscovery("judge")).toBe(hypothesisId !== "testing-0");
+    },
+  );
+
+  it("includes the response error handler beyond the old narrow fetch context window", async () => {
+    const options = fixture();
+    options.tools.execute.mockImplementation(async (request) => ({
+      tool: request.tool,
+      status: "ok",
+      truncated: false,
+      durationMs: 0,
+      output:
+        request.tool === "readFile" || request.tool === "gitShow"
+          ? Array.from(
+              { length: 110 },
+              (_, index) =>
+                `${index + 1}: ${index === 83 ? "if (!response.ok) throw new Error('exchange failed');" : "// source"}`,
+            )
+              .slice((request.startLine ?? 1) - 1, request.endLine ?? 110)
+              .join("\n")
+          : "",
+    }));
+    const records = new EvidenceStore(
+      options.tools,
+      new ReviewBudget({ maxUsd: 1, maxCalls: 1, deadline: Date.now() + 1000 }, pricing),
+      options.config,
+      vi.fn(),
+    );
+    const context = await records.surrounding(
+      { ...hypothesis, line: 70 },
+      { ...file, patch: "@@ -70,1 +70,1 @@\n-old\n+new" },
+      "judge",
+    );
+    expect(context).toHaveLength(2);
+    for (const record of context) expect(record.result.output).toContain("84: if (!response.ok)");
+  });
+
+  it("does not approve after an unresolved truncated discovery search", async () => {
+    const options = singleReviewer(
+      fixture((request) =>
+        modelResponse(
+          JSON.parse(request.user).followup
+            ? { phase: "ANALYZE", hypotheses: [] }
+            : { phase: "ANALYZE", hypotheses: [], requests: [{ tool: "search", query: "match" }] },
+        ),
+      ),
+    );
+    options.tools.execute.mockResolvedValue({
+      tool: "search",
+      status: "ok",
+      output: `${relatedPath}:1: match\n`.padEnd(6884, "x"),
+      truncated: false,
+      durationMs: 0,
+    });
+    const result = await runReview(options);
+    expect(result.coverageComplete).toBe(false);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+  });
+
   it("does not treat failed discovery as a clean review", async () => {
     const options = singleReviewer(
       fixture((request) =>
@@ -851,16 +1052,28 @@ describe("verified investigation protocol", () => {
   });
 
   it("requires the judge's own evidence even if specialist evidence is valid", async () => {
+    let foreign: { id: string; result: { output: string } };
     const options = singleReviewer(
       fixture((input) => {
         const raw = JSON.parse(input.user);
         const request = raw.originalTask ? { ...input, user: raw.originalTask } : input;
+        const envelope = JSON.parse(request.user) as ReplayEnvelope;
+        if (request.model !== "judge" && envelope.phase === "VERIFY") {
+          foreign = envelope.attestedEvidence!.find(
+            (record) => record.purpose === "investigation",
+          )!;
+        }
         return request.model === "judge" && JSON.parse(request.user).phase === "DECIDE"
           ? editDecision(request, (decision) => {
-              const envelope = JSON.parse(request.user) as ReplayEnvelope;
-              const foreign = envelope.attestedEvidence!.find(
-                (record) => record.owner !== "judge" && record.purpose === "investigation",
-              )!;
+              expect(envelope.attestedEvidence!.every((record) => record.owner === "judge")).toBe(
+                true,
+              );
+              for (const candidate of envelope.unverifiedCandidates!) {
+                expect(candidate.hypothesis).not.toHaveProperty("actualBehavior");
+                expect(candidate.hypothesis).not.toHaveProperty("impact");
+                expect(candidate).not.toHaveProperty("checks");
+                expect(candidate).not.toHaveProperty("suggestedFix");
+              }
               const checks = decision.checks as {
                 disproof: { statement: string; citations: unknown[] };
               };
@@ -1206,7 +1419,7 @@ describe("verified investigation protocol", () => {
   });
 
   it("audits shared examples, disproof instructions, narrow roles and judge output gates", () => {
-    expect(reviewCore.match(/REPORT:|REJECT:/g)).toHaveLength(5);
+    expect(reviewCore.match(/REPORT:|REJECT:/g)).toHaveLength(7);
     for (const agent of [
       "lightweight",
       "correctness",
@@ -1219,7 +1432,7 @@ describe("verified investigation protocol", () => {
       expect(specialistPrompt(agent)).toContain("Do not assign confidence, severity or priority");
       expect(specialistPrompt(agent, "VERIFY")).toContain("disproof");
     }
-    expect(judgePhasePrompt("DECIDE")).toContain("false-positive filter");
+    expect(judgePhasePrompt("DECIDE")).toContain("retain independently verified regressions");
     for (const heading of [
       "ROLE",
       "OBJECTIVE",

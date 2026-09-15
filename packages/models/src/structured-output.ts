@@ -20,7 +20,7 @@ export function supportsStructuredOutput(ref: ModelRef): boolean {
   return (
     (ref.provider === "openai" ||
       (ref.provider === "cloudflare" && ref.model.startsWith("openai/"))) &&
-    /^gpt-4\.1-mini(?:-2025-04-14)?$/.test(model)
+    /^gpt-4\.1(?:-mini)?(?:-2025-04-14)?$/.test(model)
   );
 }
 

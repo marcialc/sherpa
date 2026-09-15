@@ -34,7 +34,7 @@ export type ReviewDiagnostic =
       agent: AgentName | "judge";
       hypothesisId: string;
       evidenceId: string;
-      purpose: "head" | "baseline" | "investigation";
+      purpose: "head" | "baseline" | "investigation" | "discovery";
       tool: ToolRequest["tool"];
       status: ToolResult["status"];
       code: string;

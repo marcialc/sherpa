@@ -166,7 +166,7 @@ export type EvidenceRecord = {
   id: string;
   hypothesisId: string;
   owner: AgentName | "judge";
-  purpose: "head" | "baseline" | "investigation";
+  purpose: "head" | "baseline" | "investigation" | "discovery";
   request: ToolRequest;
   result: ToolResult;
 };

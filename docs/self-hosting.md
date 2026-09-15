@@ -95,7 +95,7 @@ Set these values:
 
 Keep `ROUTER_PROVIDER`, `SPECIALIST_PROVIDER`, and `JUDGE_PROVIDER` set to **`cloudflare`**. GitHub-triggered reviews use the gateway saved for that installation, rather than a host-wide inference key.
 
-Choose supported chat models from Cloudflare's [model catalog](https://developers.cloudflare.com/ai-gateway/models/). Model IDs include their provider, such as `openai/your-model-id` or `anthropic/your-model-id`. Your users' gateways must support your choices. You can use the same compatible model for all three roles to start, then choose separate models later.
+Choose supported chat models from Cloudflare's [model catalog](https://developers.cloudflare.com/ai-gateway/models/). Model IDs include their provider, such as `openai/your-model-id` or `anthropic/your-model-id`. Your users' gateways must support your choices. The checked-in defaults use GPT-4.1 mini for routing, and GPT-4.1 for specialist reviews and the final judge. The stronger review model is intended to distinguish verified failures from plausible but unsupported allegations. Keep the existing cost cap and evaluate both broken and working examples before changing models.
 
 ### Add model prices
 

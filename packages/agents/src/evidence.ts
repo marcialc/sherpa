@@ -93,9 +93,22 @@ export class EvidenceStore {
         outputBytes = rawBytes.byteLength;
         sourceTruncated = data.truncated;
         contextTruncated = rawBytes.byteLength > 6000;
+        // Keep file/line hits visible when long matching source lines consume the
+        // context budget. This is still truncated discovery data, never a quote.
+        const discoveryBytes =
+          contextTruncated && ["search", "grep", "findReferences"].includes(request.tool)
+            ? encoder.encode(
+                data.output
+                  .split("\n")
+                  .map(
+                    (row) => /^(?:[a-f0-9]{40}:)?[^\n]+?:\d+:/.exec(row)?.[0] ?? row.slice(0, 120),
+                  )
+                  .join("\n"),
+              )
+            : rawBytes;
         const output =
           rawBytes.byteLength > 6000
-            ? new TextDecoder().decode(rawBytes.slice(0, 6000))
+            ? new TextDecoder().decode(discoveryBytes.slice(0, 6000))
             : data.output;
         result = {
           ...data,
@@ -120,7 +133,13 @@ export class EvidenceStore {
     } finally {
       if (timer) clearTimeout(timer);
     }
-    if (result.status !== "ok" || result.truncated)
+    const partialDiscovery =
+      result.status === "ok" &&
+      result.truncated &&
+      ["search", "grep", "findReferences"].includes(request.tool);
+    // Partial search hits are retrieval hints, never evidence or proof of absence.
+    // Completion is checked after the reviewer has had a chance to read those files.
+    if ((result.status !== "ok" || result.truncated) && !partialDiscovery)
       this.incomplete("INVESTIGATION_CONTEXT_INCOMPLETE");
     // IDs, ownership, purpose and metadata originate here, outside model control.
     const record: EvidenceRecord = {
@@ -154,14 +173,56 @@ export class EvidenceStore {
     return record;
   }
 
+  hasUnresolvedDiscovery(owner: AgentName | "judge"): boolean {
+    return this.records.some((record, index) => {
+      if (
+        record.owner !== owner ||
+        !record.result.truncated ||
+        record.result.status !== "ok" ||
+        !["search", "grep", "findReferences"].includes(record.request.tool)
+      )
+        return false;
+      // A retained hit needs a complete source read from the same reviewer.
+      // Verification may reuse its own hypothesis context collected before the search.
+      const sources = record.purpose === "discovery" ? this.records.slice(index + 1) : this.records;
+      return !sources.some((source) => {
+        if (
+          source.owner !== owner ||
+          (record.purpose !== "discovery" && source.hypothesisId !== record.hypothesisId) ||
+          source.result.status !== "ok" ||
+          source.result.truncated ||
+          source.result.fileExists === false ||
+          !(
+            source.request.tool === "readFile" ||
+            (source.request.tool === "gitShow" && source.request.revision === "head")
+          )
+        )
+          return false;
+        const { path, startLine = 1, endLine = startLine + 59 } = source.request;
+        return record.result.output.split("\n").some((searchRow) => {
+          const hit = searchRow.replace(/^[a-f0-9]{40}:/, "");
+          if (!hit.startsWith(`${path}:`)) return false;
+          const match = /^(\d+):/.exec(hit.slice(path.length + 1));
+          if (!match) return false;
+          const line = Number(match[1]);
+          return (
+            line >= startLine &&
+            line <= endLine &&
+            source.result.output.split("\n").some((row) => row.startsWith(`${line}: `))
+          );
+        });
+      });
+    });
+  }
+
   async surrounding(
     hypothesis: Hypothesis,
     file: ChangedFile,
     owner: AgentName | "judge",
     reserveMs = 0,
   ): Promise<EvidenceRecord[]> {
-    const startLine = Math.max(1, (hypothesis.startLine ?? hypothesis.line) - 12);
-    const endLine = hypothesis.line + 12;
+    const startLine = Math.max(1, (hypothesis.startLine ?? hypothesis.line) - 30);
+    const endLine = hypothesis.line + 30;
     let baselineLine = hypothesis.line;
     // Account for line shifts at the candidate hunk when choosing the baseline range.
     for (const line of (file.patch ?? "").split("\n")) {
@@ -191,8 +252,8 @@ export class EvidenceStore {
         tool: "gitShow",
         path: file.previousPath ?? hypothesis.path,
         revision: "previous",
-        startLine: Math.max(1, baselineLine - 12),
-        endLine: baselineLine + 12,
+        startLine: Math.max(1, baselineLine - 30),
+        endLine: baselineLine + 30,
       },
       owner,
       "baseline",

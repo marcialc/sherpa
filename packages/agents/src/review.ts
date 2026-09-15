@@ -339,17 +339,68 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
                   record.result.status === "ok" &&
                   !record.result.truncated,
               )
-              .map((record) => ({ id: record.id, output: record.result.output }))
+              .map((record) => ({
+                id: record.id,
+                output: record.result.output,
+                hypothesisId: record.hypothesisId,
+              }))
           : [];
+      const nativeAnchors: { evidenceId: string; line: number }[] = [];
+      if (
+        payload &&
+        typeof payload === "object" &&
+        "attestedEvidence" in payload &&
+        Array.isArray(payload.attestedEvidence)
+      ) {
+        const hypotheses =
+          "untrustedHypotheses" in payload && Array.isArray(payload.untrustedHypotheses)
+            ? (payload.untrustedHypotheses as Hypothesis[])
+            : "unverifiedCandidates" in payload && Array.isArray(payload.unverifiedCandidates)
+              ? (payload.unverifiedCandidates as { hypothesis: Hypothesis }[]).map(
+                  (candidate) => candidate.hypothesis,
+                )
+              : [];
+        for (const hypothesis of hypotheses)
+          for (const record of payload.attestedEvidence as EvidenceRecord[]) {
+            if (
+              record.owner === agent &&
+              record.hypothesisId === hypothesis.id &&
+              record.result.status === "ok" &&
+              !record.result.truncated &&
+              (record.request.tool === "readFile" ||
+                (record.request.tool === "gitShow" && record.request.revision === "head")) &&
+              record.request.path === hypothesis.path
+            )
+              nativeAnchors.push({ evidenceId: record.id, line: hypothesis.line });
+          }
+      }
       const nativeEvidence = supportsStructuredOutput(ref)
-        ? constrainNativeEvidence(JSON.parse(instruction.split("\n").at(-1)!), nativeRecords)
+        ? constrainNativeEvidence(
+            JSON.parse(instruction.split("\n").at(-1)!),
+            nativeRecords,
+            nativeAnchors,
+            payload &&
+              typeof payload === "object" &&
+              "attestedEvidence" in payload &&
+              Array.isArray(payload.attestedEvidence)
+              ? (payload.attestedEvidence as EvidenceRecord[])
+                  .filter(
+                    (record) =>
+                      record.owner === agent &&
+                      record.purpose === "investigation" &&
+                      record.result.status === "ok" &&
+                      !record.result.truncated,
+                  )
+                  .map((record) => record.id)
+              : [],
+          )
         : undefined;
       const structured = nativeEvidence ? structuredOutput(nativeEvidence.schema) : undefined;
       return await budget.invoke({
         provider,
         ref,
         agent,
-        system: `${prompt}\n${instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. Use null for the optional hypothesis startLine and anchor to the primary line. When quote is an enum of line references in response_format, select source_line_N for the source line prefixed N: in that evidence record, or output_row_N for its Nth output row. The executor resolves this reference to the exact quote before validation. Do not return raw source text when references are enumerated. All evidence and decision requirements still apply." : ""}`,
+        system: `${prompt}\n${structured ? "OUTPUT JSON SCHEMA: Return an instance of the native response_format schema. Local decision, tool-policy and evidence validation still applies." : instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. Use null for the optional hypothesis startLine and anchor to the primary line. When quote is an enum of line references in response_format, select source_line_N for the source line prefixed N: in that evidence record, or output_row_N for its Nth output row. The executor resolves this reference to the exact quote before validation. Do not return raw source text when references are enumerated. All evidence and decision requirements still apply." : ""}`,
         user,
         schema: structured
           ? z.preprocess(
@@ -526,7 +577,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
             await evidence.capture(
               request,
               agent,
-              "investigation",
+              "discovery",
               `${agent}-discovery`,
               judgeReserve.ms,
             ),
@@ -685,6 +736,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       candidates.push(...verified);
       successfulSpecialists++;
     } finally {
+      if (evidence.hasUnresolvedDiscovery(agent)) incomplete("INVESTIGATION_CONTEXT_INCOMPLETE");
       plannedVerification.delete(agent);
     }
   }
@@ -714,9 +766,15 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
   const compact = (candidate: VerifiedCandidate) => ({
     id: candidate.id,
     originatingAgent: candidate.originatingAgent,
-    hypothesis: candidate.hypothesis,
-    checks: candidate.checks,
-    suggestedFix: candidate.suggestedFix,
+    hypothesis: {
+      id: candidate.hypothesis.id,
+      title: candidate.hypothesis.title,
+      path: candidate.hypothesis.path,
+      line: candidate.hypothesis.line,
+      category: candidate.hypothesis.category,
+      disproofQuestion: candidate.hypothesis.disproofQuestion,
+      verificationRequests: candidate.hypothesis.verificationRequests,
+    },
   });
   // Drop complete candidates rather than truncating any attested evidence mid-record.
   while (
@@ -725,7 +783,6 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       JSON.stringify({
         untrustedCode: code,
         unverifiedCandidates: judged.map(compact),
-        attestedEvidence: judged.flatMap((candidate) => candidate.evidence),
       }),
     ) > 24000
   ) {
@@ -735,7 +792,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
   if (!judged.length) return finish();
   const judgePaths = judged.map((candidate) => candidate.hypothesis.path);
   const judgeDomains = judged.map((candidate) => candidate.originatingAgent);
-  const judgeRecords = judged.flatMap((candidate) => candidate.evidence);
+  const judgeRecords: EvidenceRecord[] = [];
   const judgeEnvelope = (phase: "VERIFY" | "DECIDE", followup = false) => ({
     phase,
     untrustedCode: code,
@@ -930,6 +987,8 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     findings = [];
     const code = safeError(error);
     incomplete(code.startsWith("JUDGE_") ? code : `JUDGE_${code}`);
+  } finally {
+    if (evidence.hasUnresolvedDiscovery("judge")) incomplete("INVESTIGATION_CONTEXT_INCOMPLETE");
   }
   return finish();
 }

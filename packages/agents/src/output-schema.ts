@@ -88,11 +88,14 @@ ${JSON.stringify(jsonSchema)}`;
 /** Models select line references; only the executor turns them into exact quotes. */
 export function constrainNativeEvidence(
   schema: Record<string, unknown>,
-  records: { id: string; output: string }[],
+  records: { id: string; output: string; hypothesisId?: string }[],
+  anchors: { evidenceId: string; line: number }[] = [],
+  investigationIds: string[] = [],
 ): { schema: Record<string, unknown>; normalize: (value: unknown) => unknown } {
   const choices = records
     .map((record) => ({
       id: record.id,
+      hypothesisId: record.hypothesisId,
       quotes: record.output
         .split("\n")
         .map((line, index) => ({
@@ -106,19 +109,170 @@ export function constrainNativeEvidence(
     .filter((record) => record.quotes.length);
   // Bound native schema size; other outputs retain ID constraints and exact validation.
   const bounded =
-    choices.length > 0 && new TextEncoder().encode(JSON.stringify(choices)).length <= 16000;
+    choices.length > 0 &&
+    new TextEncoder().encode(
+      JSON.stringify(
+        choices.map(({ id, quotes }) => ({
+          id,
+          references: quotes.map(({ reference }) => reference),
+        })),
+      ),
+    ).length <= 16000;
   const constrained = structuredClone(schema);
-  const visit = (node: unknown) => {
+  const anchorChoices = anchors.filter((anchor) =>
+    choices.some(
+      (record) =>
+        record.id === anchor.evidenceId &&
+        record.quotes.some((quote) => quote.reference === `source_line_${anchor.line}`),
+    ),
+  );
+  const resolve = (value: Record<string, unknown>): Record<string, unknown> => {
+    if (typeof value.$ref !== "string") return value;
+    const key = value.$ref.replace(/^#\/\$defs\//, "");
+    const definitions = schema.$defs as Record<string, Record<string, unknown>> | undefined;
+    if (!definitions?.[key]) throw new Error("Unsupported anchor schema reference");
+    return resolve(definitions[key]);
+  };
+  const scopedRefs = new Map<string, string>();
+  const scopedDefinitions: Record<string, Record<string, unknown>> = {};
+  const visit = (node: unknown, hypothesisId?: string) => {
     if (!node || typeof node !== "object") return;
+    if (hypothesisId && "$ref" in node) {
+      const key = `${hypothesisId}:${node.$ref}`;
+      const existing = scopedRefs.get(key);
+      if (existing) {
+        node.$ref = existing;
+        return;
+      }
+      const resolved = structuredClone(resolve(node as Record<string, unknown>));
+      const name = `evidence_scope_${scopedRefs.size}`;
+      const reference = `#/$defs/${name}`;
+      scopedRefs.set(key, reference);
+      node.$ref = reference;
+      scopedDefinitions[name] = resolved;
+      visit(resolved, hypothesisId);
+      return;
+    }
+    const scopedChoices = choices.filter(
+      (record) => !hypothesisId || record.hypothesisId === hypothesisId,
+    );
+    const scopedAnchors = anchorChoices.filter((anchor) =>
+      scopedChoices.some((record) => record.id === anchor.evidenceId),
+    );
     if ("properties" in node && node.properties && typeof node.properties === "object") {
       const properties = node.properties as Record<string, unknown>;
+      if (
+        ("decision" in properties && "hypothesisId" in properties) ||
+        ("verdict" in properties && "candidateId" in properties)
+      ) {
+        const judge = "verdict" in properties;
+        const original = structuredClone(node) as Record<string, unknown>;
+        const ids = [
+          ...new Set(
+            anchorChoices
+              .map(
+                (anchor) => choices.find((record) => record.id === anchor.evidenceId)?.hypothesisId,
+              )
+              .filter((id): id is string => !!id),
+          ),
+        ];
+        const decisions = judge
+          ? ["reject", "accept", "merge", "needs-more-context"]
+          : ["rejected", "confirmed", "needs-more-context"];
+        const variants = (ids.length ? ids : [undefined]).flatMap((id) =>
+          decisions.map((decision) => {
+            const variant = structuredClone(original);
+            const fields = variant.properties as Record<string, unknown>;
+            if (id) fields[judge ? "candidateId" : "hypothesisId"] = { type: "string", const: id };
+            fields[judge ? "verdict" : "decision"] = { type: "string", const: decision };
+            const positive = ["accept", "merge", "confirmed"].includes(decision);
+            const required = new Set(variant.required as string[]);
+            if (positive)
+              for (const key of judge
+                ? ["checks", "usefulness", "confidence", "finalSeverity", "finalPriority"]
+                : ["checks"])
+                required.add(key);
+            else
+              for (const key of [
+                "checks",
+                "suggestedFix",
+                "usefulness",
+                "confidence",
+                "finalSeverity",
+                "finalPriority",
+                "suggestedFixSafe",
+                "mergedWith",
+              ])
+                if (key in fields) fields[key] = { type: "null" };
+            if (decision === "needs-more-context") required.add("requests");
+            else fields.requests = { type: "null" };
+            if (judge && decision === "accept") fields.mergedWith = { type: "null" };
+            if (decision === "merge") required.add("mergedWith");
+            variant.required = [...required];
+            Object.values(fields).forEach((field) => visit(field, id));
+            // Establish the explanation before choosing the decision in native decoding.
+            variant.properties = { reason: fields.reason, ...fields };
+            return variant;
+          }),
+        );
+        const target = node as Record<string, unknown>;
+        for (const key of Object.keys(target)) delete target[key];
+        target.anyOf = variants;
+        return;
+      }
+      if (
+        (scopedAnchors.length || (bounded && investigationIds.length)) &&
+        "anchor" in properties &&
+        "disproof" in properties
+      ) {
+        for (const [key, child] of Object.entries(properties))
+          if (key !== "anchor" && key !== "disproof") visit(child, hypothesisId);
+        const restrict = (name: string, variants: Record<string, unknown>[]) => {
+          if (!variants.length) {
+            visit(properties[name], hypothesisId);
+            return;
+          }
+          const claim = structuredClone(resolve(properties[name] as Record<string, unknown>));
+          const claimProperties = claim.properties as Record<string, Record<string, unknown>>;
+          const citations = structuredClone(resolve(claimProperties.citations!));
+          citations.items = { anyOf: variants };
+          claimProperties.citations = citations;
+          properties[name] = claim;
+        };
+        const citation = (id: string, references: string[]) => ({
+          type: "object",
+          properties: {
+            evidenceId: { type: "string", enum: [id] },
+            quote: references.length
+              ? { type: "string", enum: references }
+              : { type: "string", minLength: 4, maxLength: 500 },
+          },
+          required: ["evidenceId", "quote"],
+          additionalProperties: false,
+        });
+        restrict(
+          "anchor",
+          scopedAnchors.map(({ evidenceId, line }) =>
+            citation(evidenceId, [`source_line_${line}`]),
+          ),
+        );
+        restrict(
+          "disproof",
+          scopedChoices
+            .filter((record) => investigationIds.includes(record.id))
+            .map((record) =>
+              citation(record.id, bounded ? record.quotes.map((quote) => quote.reference) : []),
+            ),
+        );
+        return;
+      }
       // A finding can always use its primary line; optional wide ranges add no evidence.
       if ("verificationRequests" in properties && "startLine" in properties)
         properties.startLine = { type: "null" };
       if (bounded && "evidenceId" in properties && "quote" in properties) {
         const target = node as Record<string, unknown>;
         for (const key of Object.keys(target)) delete target[key];
-        target.anyOf = choices.map(({ id, quotes }) => ({
+        target.anyOf = scopedChoices.map(({ id, quotes }) => ({
           type: "object",
           properties: {
             evidenceId: { type: "string", enum: [id] },
@@ -130,11 +284,13 @@ export function constrainNativeEvidence(
         return;
       }
     }
-    Object.values(node).forEach(visit);
+    Object.values(node).forEach((child) => visit(child, hypothesisId));
   };
   visit(constrained);
+  if (Object.keys(scopedDefinitions).length)
+    constrained.$defs = { ...(constrained.$defs as Record<string, unknown>), ...scopedDefinitions };
   const normalize = (value: unknown): unknown => {
-    if (!bounded || !value || typeof value !== "object") return value;
+    if ((!bounded && !anchorChoices.length) || !value || typeof value !== "object") return value;
     if (Array.isArray(value)) return value.map(normalize);
     if ("evidenceId" in value && "quote" in value) {
       const record = choices.find((record) => record.id === value.evidenceId);

@@ -243,11 +243,99 @@ describe("model response schema instructions", () => {
     expect(
       wire.normalize({ phase: "ANALYZE", hypotheses: [{ line: 70, startLine: null }] }),
     ).toEqual({ phase: "ANALYZE", hypotheses: [{ line: 70 }] });
-    const large = Array.from({ length: 100 }, (_, i) => ({
+    const large = Array.from({ length: 1000 }, (_, i) => ({
       id: `ev-${i}`,
       output: `${i}: ` + "x".repeat(400),
     }));
     const citations = generated(z.object({ evidenceId: z.string(), quote: z.string() }));
+    const verboseSources = Array.from({ length: 4 }, (_, i) => ({
+      id: `ev-${i}`,
+      output: Array.from({ length: 60 }, (_, line) => `${line + 40}: ${"x".repeat(75)}`).join("\n"),
+    }));
+    expect(JSON.stringify(verboseSources).length).toBeGreaterThan(16000);
+    const compact = constrainNativeEvidence(citations, verboseSources).schema as JsonSchema;
+    expect(compact.anyOf![0]!.properties!.quote!.enum).toHaveLength(60);
     expect(constrainNativeEvidence(citations, large).schema).toEqual(citations);
+  });
+  it("restricts anchor citations to the assigned changed line, not a nearby call", () => {
+    const native = constrainNativeEvidence(
+      generated(verificationResponseSchema),
+      [
+        { id: "ev-head", output: '68: response = await fetch(url, {\n70: redirect: "error",' },
+        { id: "ev-base", output: '70: redirect: "manual",' },
+      ],
+      [{ evidenceId: "ev-head", line: 70 }],
+    );
+    const root = native.schema as JsonSchema;
+    const assessment = resolve(root, root.properties!.assessments!.items!).anyOf![1]!;
+    const checks = resolve(root, assessment.properties!.checks!);
+    const anchor = resolve(root, checks.properties!.anchor!);
+    const items = resolve(root, anchor.properties!.citations!).items!;
+    expect(items.anyOf).toHaveLength(1);
+    expect(items.anyOf![0]!.properties).toEqual({
+      evidenceId: { type: "string", enum: ["ev-head"] },
+      quote: { type: "string", enum: ["source_line_70"] },
+    });
+    expect(native.normalize({ evidenceId: "ev-head", quote: "source_line_70" })).toEqual({
+      evidenceId: "ev-head",
+      quote: '70: redirect: "error",',
+    });
+    expect(anchor.required).toEqual(["statement", "citations"]);
+  });
+
+  it("scopes candidate citations to independently collected evidence without biasing decisions", () => {
+    const native = constrainNativeEvidence(
+      generated(judgeResponseSchema),
+      [
+        { id: "head", output: "70: return changed;", hypothesisId: "testing-0" },
+        {
+          id: "investigation",
+          output: "23: expect(result).toBe(original);",
+          hypothesisId: "testing-0",
+        },
+        { id: "other-head", output: "70: return changed;", hypothesisId: "types-0" },
+        { id: "other-investigation", output: "80: catch (error) {}", hypothesisId: "types-0" },
+      ],
+      [
+        { evidenceId: "head", line: 70 },
+        { evidenceId: "other-head", line: 70 },
+      ],
+      ["investigation", "other-investigation"],
+    );
+    const root = native.schema as JsonSchema;
+    const variants = resolve(root, root.properties!.decisions!.items!).anyOf!;
+    expect(variants).toHaveLength(8);
+    const accept = variants[1]!;
+    expect(accept.properties!.verdict!.const).toBe("accept");
+    expect(accept.required).toContain("checks");
+    expect(accept.properties!.requests).toEqual({ type: "null" });
+    expect(Object.keys(accept.properties!)[0]).toBe("reason");
+    expect(accept.properties!.candidateId!.const).toBe("testing-0");
+    const checks = resolve(root, accept.properties!.checks!);
+    const disproof = resolve(root, checks.properties!.disproof!);
+    expect(
+      resolve(root, disproof.properties!.citations!).items!.anyOf![0]!.properties!.evidenceId!.enum,
+    ).toEqual(["investigation"]);
+    expect(resolve(root, disproof.properties!.citations!).items!.anyOf).toHaveLength(1);
+    const actual = resolve(root, checks.properties!.actualBehavior!);
+    expect(
+      resolve(root, resolve(root, actual.properties!.citations!).items!).anyOf!.map(
+        (citation) => citation.properties!.evidenceId!.enum,
+      ),
+    ).toEqual([["head"], ["investigation"]]);
+    const normalized = structuredOutput(native.schema).normalize({
+      phase: "DECIDE",
+      decisions: [
+        {
+          candidateId: "testing-0",
+          verdict: "reject",
+          reason: "The existing test already accepts the new behavior.",
+          checks: null,
+          requests: null,
+          finalPriority: null,
+        },
+      ],
+    });
+    expect(judgeResponseSchema.safeParse(normalized).success).toBe(true);
   });
 });

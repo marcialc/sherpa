@@ -85,5 +85,8 @@ describe("strict structured output", () => {
       supportsStructuredOutput({ provider: "cloudflare", model: "anthropic/gpt-4.1-mini" }),
     ).toBe(false);
     expect(supportsStructuredOutput({ provider: "openai", model: "gpt-3.5-turbo" })).toBe(false);
+    expect(supportsStructuredOutput({ provider: "cloudflare", model: "openai/gpt-4.1" })).toBe(
+      true,
+    );
   });
 });
