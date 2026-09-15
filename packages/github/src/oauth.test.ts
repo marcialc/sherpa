@@ -53,6 +53,15 @@ describe("GitHub user OAuth", () => {
     expect(accessibleInstallation(installations, 99)).toBeUndefined();
   });
 
+  it("rejects callback URLs outside the expected HTTPS origin", () => {
+    expect(() =>
+      oauth(vi.fn<Fetcher>()).authorizeUrl({
+        redirectUri: "http://evil.example/callback",
+        state: "a".repeat(16),
+      }),
+    ).toThrow();
+  });
+
   it("rejects denied OAuth exchanges without echoing GitHub error bodies", async () => {
     const fetch: Fetcher = async () =>
       json({ error: "bad_verification_code", error_description: "secret" });
