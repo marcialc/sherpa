@@ -22,6 +22,7 @@ import { unconfiguredBillingResult } from "./billing";
 import { getSettings, type RuntimeEnv } from "./settings";
 import { withReviewCheck } from "./progress";
 import { reviewSandboxId } from "./sandbox-id";
+import { createReviewLogger } from "./review-logging";
 
 export type WorkflowParams = ReviewJob & { recoveryOnly?: boolean };
 export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParams> {
@@ -155,6 +156,7 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
         return { context, config };
       },
       analyze: async (context, config, baseline) => {
+        const diagnostic = createReviewLogger(job);
         const risk = routeReview(context.files, config);
         if (risk.skip && !context.filesTruncated)
           return {
@@ -214,13 +216,15 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
               code: repositoryFailureCode(error),
             });
           }
+          diagnostic({
+            event: "review.repository_ready",
+            fileCount: files.length,
+            repositoryAvailable,
+            incrementalBaseSha,
+            durationMs: Date.now() - startedAt,
+          });
           const result = await runReview({
-            onInvalidOutput: (agent, phase, diagnostic) =>
-              log("review.model_invalid_output", {
-                reviewId: job.reviewId,
-                stage: `${agent}_${phase}`,
-                code: `${diagnostic.code}:${diagnostic.issues.join("|")}`,
-              }),
+            onDiagnostic: diagnostic,
             context,
             files,
             tools: repositoryAvailable ? session : unavailable,

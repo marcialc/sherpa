@@ -6,7 +6,12 @@ import {
   type ModelResponse,
   type TokenUsage,
 } from "./providers";
-import { outputRepairInstruction, schemaDiagnostic, type OutputDiagnostic } from "./output";
+import {
+  outputRepairInstruction,
+  schemaDiagnostic,
+  type OutputDiagnostic,
+  type ModelAttemptDiagnostic,
+} from "./output";
 
 export type ModelPrice = {
   inputUsdPerMillion: number;
@@ -185,6 +190,7 @@ export class ReviewBudget {
     preserve?: BudgetReserve;
     repairInvalidOutput?: boolean;
     onInvalidOutput?: (diagnostic: OutputDiagnostic) => void;
+    onAttempt?: (diagnostic: ModelAttemptDiagnostic) => void;
   }): Promise<T> {
     if (
       !Number.isSafeInteger(args.outputTokens) ||
@@ -201,6 +207,27 @@ export class ReviewBudget {
       const inputBound = new TextEncoder().encode(system + user).byteLength + 1024;
       if (inputBound > 65000) throw new BudgetError("MODEL_INPUT_LIMIT");
       const ticket = this.reserve(args.ref, args.agent, inputBound, args.outputTokens, preserve);
+      const attemptDiagnostic = (
+        event: ModelAttemptDiagnostic["event"],
+        extra: Partial<ModelAttemptDiagnostic> = {},
+      ) => {
+        // Observability must never change review execution or budget accounting.
+        try {
+          args.onAttempt?.({
+            event,
+            attempt: attempt + 1,
+            correction: repaired,
+            durationMs: this.now() - ticket.started,
+            remainingMs: this.remainingMs(),
+            inputBytes: inputBound - 1024,
+            maxOutputTokens: args.outputTokens,
+            ...extra,
+          });
+        } catch {
+          /* Ignore an unavailable diagnostic sink. */
+        }
+      };
+      attemptDiagnostic("review.model_started");
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
@@ -226,6 +253,15 @@ export class ReviewBudget {
         ]);
       } catch (error) {
         this.settle(ticket);
+        attemptDiagnostic("review.model_failed", {
+          code:
+            error instanceof ProviderError &&
+            /^(PROVIDER_(HTTP_[1-5][0-9]{2}|TIMEOUT|TRANSPORT_FAILED|BODY_TOO_LARGE|EMPTY_BODY|INVALID_JSON|INCOMPLETE_RESPONSE|INVALID_RESPONSE|INVALID_USAGE)|INVALID_MODEL_REQUEST|MODEL_REQUEST_TOO_LARGE|INVALID_CLOUDFLARE_GATEWAY_CONFIG)$/.test(
+              error.code,
+            )
+              ? error.code
+              : "MODEL_REQUEST_FAILED",
+        });
         if (
           !(error instanceof ProviderError) ||
           !error.retryable ||
@@ -251,9 +287,23 @@ export class ReviewBudget {
       }
       if (!diagnostic) {
         const validated = args.schema.safeParse(parsed);
-        if (validated.success) return validated.data;
-        diagnostic = schemaDiagnostic(validated.error);
+        if (validated.success) {
+          attemptDiagnostic("review.model_completed", {
+            outputBytes: new TextEncoder().encode(result.text).byteLength,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+          });
+          return validated.data;
+        }
+        diagnostic = schemaDiagnostic(validated.error, parsed);
       }
+      attemptDiagnostic("review.model_invalid_output", {
+        code: diagnostic.code,
+        validation: diagnostic,
+        outputBytes: new TextEncoder().encode(result.text).byteLength,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+      });
       args.onInvalidOutput?.(diagnostic);
       if (!args.repairInvalidOutput || repaired) throw new ProviderError(diagnostic.code);
       repaired = true;

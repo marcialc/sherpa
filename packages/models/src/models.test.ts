@@ -355,6 +355,62 @@ describe("shared budget reservations", () => {
     ]);
     expect(JSON.stringify(diagnostic)).not.toMatch(/private|secretRecord|token/);
   });
+  it("reports schema bounds and nulls, and tracks the successful correction without payload logging", async () => {
+    const invalid = {
+      assessments: [{ reason: null }, { reason: "secret".repeat(10) }],
+      "secret-key": "secret-value",
+    };
+    const schema = z
+      .object({ assessments: z.array(z.object({ reason: z.string().min(8).max(20) })) })
+      .strict();
+    const provider = {
+      complete: vi
+        .fn<ModelProvider["complete"]>()
+        .mockResolvedValueOnce(response(JSON.stringify(invalid)))
+        .mockResolvedValueOnce(response('{"assessments":[{"reason":"Valid reason"}]}')),
+    };
+    const onAttempt = vi.fn();
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    await budget.invoke({ ...args, schema, provider, repairInvalidOutput: true, onAttempt });
+    const events = onAttempt.mock.calls.map(([event]) => event);
+    expect(events.map((event) => [event.event, event.attempt, event.correction])).toEqual([
+      ["review.model_started", 1, false],
+      ["review.model_invalid_output", 1, false],
+      ["review.model_started", 2, true],
+      ["review.model_completed", 2, true],
+    ]);
+    expect(events[1]).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 10,
+      validation: {
+        issueCount: 3,
+        details: [
+          { path: "assessments.0.reason", received: "null", expected: "string" },
+          { path: "assessments.1.reason", received: "string", maximum: 20, actualLength: 60 },
+          { path: "$", unknownKeyCount: 1, unrecognizedKeys: ["*"] },
+        ],
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain("secret");
+  });
+  it("ignores diagnostic sink exceptions without losing successful model results", async () => {
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    expect(
+      await budget.invoke({
+        ...args,
+        provider: { complete: async () => response() },
+        onAttempt: () => {
+          throw new Error("sink failed");
+        },
+      }),
+    ).toEqual({ ok: true });
+  });
   it("enforces deadlines even when an adapter ignores the abort signal", async () => {
     const provider = { complete: vi.fn().mockReturnValue(new Promise(() => {})) };
     const budget = new ReviewBudget({ maxUsd: 1, maxCalls: 3, deadline: Date.now() + 20 }, pricing);

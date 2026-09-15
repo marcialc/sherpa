@@ -124,6 +124,15 @@ describe("paired adversarial protocol replay", () => {
       expect(onInvalidOutput).toHaveBeenCalledWith("lightweight", "VERIFY", {
         code: "MODEL_INVALID_SCHEMA",
         issues: ["assessments.0.reason:invalid_type"],
+        issueCount: 1,
+        details: [
+          {
+            path: "assessments.0.reason",
+            code: "invalid_type",
+            expected: "string",
+            received: "undefined",
+          },
+        ],
       });
       expect(result.coverageComplete).toBe(!forgeDisproof);
       expect(result.findings).toHaveLength(forgeDisproof ? 0 : 1);

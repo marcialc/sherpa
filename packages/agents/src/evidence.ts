@@ -9,6 +9,7 @@ import type {
 } from "@sherpa/schemas";
 import { BudgetError, ProviderError, type ReviewBudget } from "@sherpa/models";
 import { strictToolRequestSchema, type EvidenceRecord, type Hypothesis } from "./investigation";
+import { emitDiagnostic, toolDiagnosticCode, type ReviewDiagnostic } from "./diagnostics";
 
 const encoder = new TextEncoder();
 const resultSchema = z
@@ -30,6 +31,7 @@ export class EvidenceStore {
     private readonly budget: ReviewBudget,
     private readonly config: RepoConfig,
     private readonly incomplete: (code: string) => void,
+    private readonly onDiagnostic?: (event: ReviewDiagnostic) => void,
   ) {}
 
   async capture(
@@ -64,6 +66,10 @@ export class EvidenceStore {
     };
     const policyKey = validationKey[request.tool];
     let result: ToolResult;
+    const started = Date.now();
+    let outputBytes = 0;
+    let sourceTruncated = false;
+    let contextTruncated = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (policyKey && (!this.config.validation.enabled || !this.config.validation[policyKey])) {
@@ -84,6 +90,9 @@ export class EvidenceStore {
           throw new ProviderError("INVALID_TOOL_RESULT");
         const data = parsed.data;
         const rawBytes = encoder.encode(data.output);
+        outputBytes = rawBytes.byteLength;
+        sourceTruncated = data.truncated;
+        contextTruncated = rawBytes.byteLength > 6000;
         const output =
           rawBytes.byteLength > 6000
             ? new TextDecoder().decode(rawBytes.slice(0, 6000))
@@ -99,7 +108,12 @@ export class EvidenceStore {
       result = {
         tool: request.tool,
         status: "failed",
-        output: error instanceof BudgetError ? error.code : "TOOL_FAILED",
+        output:
+          error instanceof BudgetError
+            ? error.code
+            : error instanceof ProviderError && error.code === "INVALID_TOOL_RESULT"
+              ? error.code
+              : "TOOL_FAILED",
         truncated: false,
         durationMs: 0,
       };
@@ -118,6 +132,25 @@ export class EvidenceStore {
       result,
     };
     this.records.push(record);
+    emitDiagnostic(this.onDiagnostic, {
+      event: "review.tool_completed",
+      agent: owner,
+      hypothesisId,
+      evidenceId: record.id,
+      purpose,
+      tool: request.tool,
+      status: result.status,
+      code: toolDiagnosticCode(result),
+      truncated: result.truncated,
+      sourceTruncated,
+      contextTruncated,
+      outputBytes: outputBytes || encoder.encode(result.output).byteLength,
+      retainedBytes: encoder.encode(result.output).byteLength,
+      durationMs: Date.now() - started,
+      ...("startLine" in request ? { startLine: request.startLine, endLine: request.endLine } : {}),
+      ...("revision" in request ? { revision: request.revision } : {}),
+      ...(result.fileExists !== undefined ? { fileExists: result.fileExists } : {}),
+    });
     return record;
   }
 

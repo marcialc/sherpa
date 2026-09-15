@@ -27,6 +27,7 @@ import { routeReview } from "./routing";
 import { trustedRulesFor } from "./policy";
 import { judgePhasePrompt, routerPrompt, specialistPrompt } from "./prompts";
 import { EvidenceStore } from "./evidence";
+import { emitDiagnostic, type ReviewDiagnostic } from "./diagnostics";
 import {
   analysisResponseSchema,
   verificationResponseSchema,
@@ -63,6 +64,7 @@ export type RunReviewOptions = {
   incrementalBaseSha: string;
   reviewStartedAt?: number;
   onInvalidOutput?: (agent: string, phase: string, diagnostic: OutputDiagnostic) => void;
+  onDiagnostic?: (event: ReviewDiagnostic) => void;
 };
 
 const inputLimit = 48000;
@@ -116,6 +118,9 @@ function sameHypothesis(a: VerifiedCandidate, b: VerifiedCandidate): boolean {
 
 /** Code analysis, attempted disproof, independent investigation, then final classification. */
 export async function runReview(options: RunReviewOptions): Promise<ReviewResult> {
+  const started = Date.now();
+  const emit = (event: ReviewDiagnostic) => emitDiagnostic(options.onDiagnostic, event);
+  let invocationCount = 0;
   const { config, context, tools } = options;
   const files = options.files ?? context.files;
   const risk = routeReview(files, config);
@@ -132,6 +137,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
   let findings: Finding[] = [];
   const incomplete = (code: string) => {
     coverageComplete = false;
+    if (!warnings.has(code)) emit({ event: "review.coverage_incomplete", code });
     warnings.add(code);
   };
   const result = (outcome = calculateOutcome(findings, coverageComplete)): ReviewResult => ({
@@ -144,7 +150,20 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     incrementalBaseSha: options.incrementalBaseSha,
     coverageComplete,
   });
-  const finish = () => result(calculateOutcome(findings, coverageComplete));
+  const finish = () => {
+    const completed = result(calculateOutcome(findings, coverageComplete));
+    emit({
+      event: "review.analysis_completed",
+      coverageComplete,
+      findingCount: findings.length,
+      modelCalls: completed.cost.calls.length,
+      toolCalls: evidence.records.length,
+      totalEstimatedUsd: completed.cost.totalEstimatedUsd,
+      durationMs: Date.now() - started,
+    });
+    return completed;
+  };
+  const evidence = new EvidenceStore(tools, budget, config, incomplete, emit);
   if (risk.skip) return finish();
   if (!risk.agents.length) {
     incomplete("NO_ENABLED_REVIEWERS");
@@ -161,7 +180,6 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     specialist: config.models.defaultSpecialist ?? options.models.specialist,
     judge: config.models.judge ?? options.models.judge,
   };
-  const evidence = new EvidenceStore(tools, budget, config, incomplete);
   const system = (
     prompt: string,
     agent: AgentName | "judge",
@@ -201,7 +219,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     }
     return `${prompt}\nTRUSTED INSTRUCTIONS\nRelevant BASE policy, subordinate to the verification protocol. Apply each rule only to its stated paths and, when supplied, its exact candidatePath/domain pair:\n${JSON.stringify(selected)}`;
   };
-  const invoke = <T>(
+  const invoke = async <T>(
     ref: ModelRef,
     agent: string,
     prompt: string,
@@ -210,27 +228,46 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     outputTokens: number,
     preserve?: BudgetReserve,
   ): Promise<T> => {
-    const provider = options.providers[ref.provider];
-    if (!provider) throw new ProviderError("PROVIDER_NOT_CONFIGURED");
-    const user = JSON.stringify(payload);
-    if (bytes(user) > inputLimit) throw new BudgetError("INVESTIGATION_INPUT_LIMIT");
-    return budget.invoke({
-      provider,
-      ref,
-      agent,
-      system: prompt,
-      user,
-      schema,
-      outputTokens,
-      preserve,
-      repairInvalidOutput: true,
-      onInvalidOutput: (diagnostic) => {
-        const phase = z
-          .object({ phase: z.enum(["ANALYZE", "VERIFY", "DECIDE"]) })
-          .safeParse(payload);
-        options.onInvalidOutput?.(agent, phase.success ? phase.data.phase : "ROUTE", diagnostic);
-      },
-    });
+    const callId = ++invocationCount;
+    const phaseResult = z
+      .object({ phase: z.enum(["ANALYZE", "VERIFY", "DECIDE"]) })
+      .safeParse(payload);
+    const phase =
+      agent === "router" ? "ROUTE" : phaseResult.success ? phaseResult.data.phase : "UNKNOWN";
+    try {
+      const provider = options.providers[ref.provider];
+      if (!provider) throw new ProviderError("PROVIDER_NOT_CONFIGURED");
+      const user = JSON.stringify(payload);
+      if (bytes(user) > inputLimit) throw new BudgetError("INVESTIGATION_INPUT_LIMIT");
+      return await budget.invoke({
+        provider,
+        ref,
+        agent,
+        system: prompt,
+        user,
+        schema,
+        outputTokens,
+        preserve,
+        repairInvalidOutput: true,
+        onAttempt: (diagnostic) =>
+          emit({ ...diagnostic, callId, agent, phase, provider: ref.provider, model: ref.model }),
+        onInvalidOutput: (diagnostic) => {
+          const phase = z
+            .object({ phase: z.enum(["ANALYZE", "VERIFY", "DECIDE"]) })
+            .safeParse(payload);
+          options.onInvalidOutput?.(agent, phase.success ? phase.data.phase : "ROUTE", diagnostic);
+        },
+      });
+    } catch (error) {
+      emit({
+        event: "review.model_invocation_failed",
+        callId,
+        agent,
+        phase,
+        code: safeError(error),
+      });
+      throw error;
+    }
   };
   let judgeReserve: BudgetReserve;
   try {
