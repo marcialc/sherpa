@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { structuredOutput } from "@sherpa/models";
 import { repoConfigSchema } from "@sherpa/schemas";
 import {
   analysisResponseSchema,
@@ -9,7 +10,11 @@ import {
   strictToolRequestSchema,
   verificationResponseSchema,
 } from "./investigation";
-import { constrainEvidenceIds, outputSchemaInstruction } from "./output-schema";
+import {
+  constrainEvidenceIds,
+  constrainNativeEvidence,
+  outputSchemaInstruction,
+} from "./output-schema";
 
 type JsonSchema = {
   $ref?: string;
@@ -195,5 +200,54 @@ describe("model response schema instructions", () => {
     expect(citation.properties!.evidenceId).toEqual({ type: "string", enum: ["ev-7", "ev-8"] });
     expect(resolve(constrained, assessment.properties!.hypothesisId!).enum).toBeUndefined();
     expect(JSON.stringify(original)).not.toContain("ev-7");
+  });
+  it("pairs exact offered quotes with their evidence IDs without altering source data", () => {
+    const schema = z.object({ citation: z.object({ evidenceId: z.string(), quote: z.string() }) });
+    const original = generated(schema);
+    const constrained = constrainNativeEvidence(original, [
+      { id: "ev-1", output: '70:         redirect: "error",\n71:         signal: timeout,' },
+      { id: "ev-2", output: '70:         redirect: "manual",' },
+    ]);
+    const citation = (constrained.schema as JsonSchema).properties!.citation!;
+    expect(citation.anyOf).toHaveLength(2);
+    expect(citation.anyOf![0]!.properties!.quote!.enum).toEqual([
+      "source_line_70",
+      "source_line_71",
+    ]);
+    expect(citation.anyOf![1]!.properties!.quote!.enum).toEqual(["source_line_70"]);
+    expect(citation.anyOf![1]!.properties!.evidenceId!.enum).toEqual(["ev-2"]);
+    const wire = structuredOutput(constrained.schema);
+    expect(
+      constrained.normalize(
+        wire.normalize({
+          citation: { evidenceId: "ev-2", quote: "source_line_70" },
+        }),
+      ),
+    ).toEqual({ citation: { evidenceId: "ev-2", quote: '70:         redirect: "manual",' } });
+    expect(
+      constrained.normalize({ citation: { evidenceId: "ev-2", quote: "source_line_71" } }),
+    ).toEqual({ citation: { evidenceId: "ev-2", quote: "source_line_71" } });
+    expect(
+      constrained.normalize({ citation: { evidenceId: "invented", quote: "source_line_70" } }),
+    ).toEqual({ citation: { evidenceId: "invented", quote: "source_line_70" } });
+    expect(JSON.stringify(original)).not.toContain("ev-1");
+  });
+
+  it("bounds native quote choices and normalizes single-line hypothesis ranges", () => {
+    const original = generated(analysisResponseSchema);
+    const constrained = constrainNativeEvidence(original, []);
+    const root = constrained.schema as JsonSchema;
+    const hypothesis = resolve(root, root.properties!.hypotheses!.items!);
+    expect(hypothesis.properties!.startLine).toEqual({ type: "null" });
+    const wire = structuredOutput(constrained.schema);
+    expect(
+      wire.normalize({ phase: "ANALYZE", hypotheses: [{ line: 70, startLine: null }] }),
+    ).toEqual({ phase: "ANALYZE", hypotheses: [{ line: 70 }] });
+    const large = Array.from({ length: 100 }, (_, i) => ({
+      id: `ev-${i}`,
+      output: `${i}: ` + "x".repeat(400),
+    }));
+    const citations = generated(z.object({ evidenceId: z.string(), quote: z.string() }));
+    expect(constrainNativeEvidence(citations, large).schema).toEqual(citations);
   });
 });
