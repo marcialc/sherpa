@@ -8,6 +8,8 @@ import { evalFixtures, type EvalFixture } from "./fixtures";
 import { fixtureContext, fixtureTools } from "./repository";
 import { measure, type EvaluationRun } from "./metrics";
 import { modelResponse, replayResponse } from "../fixtures/reviewer";
+import { outputSchemaInstruction } from "../../packages/agents/src/output-schema";
+import { verificationResponseSchema } from "../../packages/agents/src/investigation";
 
 function proposal(fixture: EvalFixture): {
   hypothesis: Hypothesis;
@@ -91,7 +93,7 @@ function options(fixture: EvalFixture, provider: ModelProvider): RunReviewOption
 
 describe("paired adversarial protocol replay", () => {
   it.each([false, true])(
-    "repairs a missing assessment reason without bypassing evidence checks (forged=%s)",
+    "repairs the production missing reason/array checks shape without bypassing evidence checks (forged=%s)",
     async (forgeDisproof) => {
       const fixture = evalFixtures.find((item) => item.id === "authorization-bypass")!;
       const trace = proposal(fixture);
@@ -104,6 +106,22 @@ describe("paired adversarial protocol replay", () => {
           };
           if (envelope.originalTask) {
             corrections++;
+            expect(request.system).toContain(outputSchemaInstruction(verificationResponseSchema));
+            expect(JSON.parse(request.user).validationDetails).toEqual([
+              {
+                path: "assessments.0.reason",
+                code: "invalid_type",
+                expected: "string",
+                received: "undefined",
+              },
+              {
+                path: "assessments.0.checks",
+                code: "invalid_type",
+                expected: "object",
+                received: "array",
+                actualLength: 6,
+              },
+            ]);
             return replayResponse(
               { ...request, user: envelope.originalTask },
               { ...trace, forgeDisproof },
@@ -111,8 +129,14 @@ describe("paired adversarial protocol replay", () => {
           }
           const result = replayResponse(request, { ...trace, forgeDisproof });
           if (envelope.untrustedHypotheses) {
-            const invalid = JSON.parse(result.text) as { assessments: { reason?: string }[] };
-            for (const assessment of invalid.assessments) delete assessment.reason;
+            expect(request.system).toContain(outputSchemaInstruction(verificationResponseSchema));
+            const invalid = JSON.parse(result.text) as {
+              assessments: { reason?: string; checks: Record<string, unknown> | unknown[] }[];
+            };
+            for (const assessment of invalid.assessments) {
+              delete assessment.reason;
+              assessment.checks = Object.values(assessment.checks).slice(0, 6);
+            }
             return modelResponse(invalid);
           }
           return result;
@@ -123,14 +147,21 @@ describe("paired adversarial protocol replay", () => {
       expect(corrections).toBe(1);
       expect(onInvalidOutput).toHaveBeenCalledWith("lightweight", "VERIFY", {
         code: "MODEL_INVALID_SCHEMA",
-        issues: ["assessments.0.reason:invalid_type"],
-        issueCount: 1,
+        issues: ["assessments.0.reason:invalid_type", "assessments.0.checks:invalid_type"],
+        issueCount: 2,
         details: [
           {
             path: "assessments.0.reason",
             code: "invalid_type",
             expected: "string",
             received: "undefined",
+          },
+          {
+            path: "assessments.0.checks",
+            code: "invalid_type",
+            expected: "object",
+            received: "array",
+            actualLength: 6,
           },
         ],
       });

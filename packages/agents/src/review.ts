@@ -26,6 +26,7 @@ import { reviewableLines, sameFinding, severityOrder } from "./findings";
 import { routeReview } from "./routing";
 import { trustedRulesFor } from "./policy";
 import { judgePhasePrompt, routerPrompt, specialistPrompt } from "./prompts";
+import { outputSchemaInstruction } from "./output-schema";
 import { EvidenceStore } from "./evidence";
 import { emitDiagnostic, type ReviewDiagnostic } from "./diagnostics";
 import {
@@ -243,7 +244,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         provider,
         ref,
         agent,
-        system: prompt,
+        system: `${prompt}\n${outputSchemaInstruction(schema)}`,
         user,
         schema,
         outputTokens,

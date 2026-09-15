@@ -312,6 +312,7 @@ export class ReviewBudget {
         originalTask: args.user,
         untrustedPreviousResponse: result.text,
         validationIssues: diagnostic.issues,
+        validationDetails: diagnostic.details ?? [],
       });
     }
   }
