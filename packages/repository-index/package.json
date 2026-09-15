@@ -1,7 +1,6 @@
 {
-  "name": "@sherpa/agents",
+  "name": "@sherpa/repository-index",
   "version": "0.1.0",
-  "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +9,9 @@
   "dependencies": {
     "@sherpa/schemas": "workspace:*",
     "@sherpa/models": "workspace:*",
-    "zod": "^4.6.5",
-    "@sherpa/repository-index": "workspace:*"
+    "@sherpa/shared": "workspace:*",
+    "typescript": "^6.0.3",
+    "ignore": "^7.0.5",
+    "zod": "^4.6.5"
   }
 }

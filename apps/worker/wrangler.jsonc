@@ -4,10 +4,25 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-13",
   "compatibility_flags": ["nodejs_compat"],
+  // TypeScript's CommonJS bootstrap needs filenames when bundled as Worker ESM.
+  // Parsing uses createSourceFile only; these virtual paths never select repository files.
+  "define": { "__filename": "\"/bundle/index.js\"", "__dirname": "\"/bundle\"" },
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "limits": { "cpu_ms": 300000 },
   "workflows": [
     { "binding": "REVIEW_WORKFLOW", "name": "sherpa-review", "class_name": "ReviewWorkflow" },
+    {
+      "binding": "INDEX_WORKFLOW",
+      "name": "sherpa-repository-index",
+      "class_name": "RepositoryIndexWorkflow",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "INDEX_DB",
+      "database_name": "sherpa-repository-index",
+      "migrations_dir": "migrations",
+    },
   ],
   "durable_objects": {
     "bindings": [
@@ -38,6 +53,9 @@
     ],
   },
   "vars": {
+    "INDEX_ENABLED": "true",
+    "INDEX_MODEL": "openai/gpt-4.1-mini",
+    "INDEX_CONFIG_JSON": "{}",
     "GITHUB_CLIENT_ID": "Iv23ctpcCwugHpqyEz78",
     "PUBLIC_BASE_URL": "https://sherpa.marcialandres06.workers.dev",
     "CLOUDFLARE_ACCOUNT_ID": "",

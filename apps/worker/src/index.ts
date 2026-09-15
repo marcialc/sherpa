@@ -1,8 +1,10 @@
 import { handleWebhook } from "./webhook";
 import { dispatchReview } from "./dispatch";
+import { dispatchIndex } from "./index-dispatch";
 import { handleSetup } from "./setup";
 import type { RuntimeEnv } from "./settings";
 export { ReviewWorkflow } from "./workflow";
+export { RepositoryIndexWorkflow } from "./index-workflow";
 export { ReviewLedger } from "./ledger";
 export { InstallationSettings } from "./installation-settings";
 export { ReviewSandbox, ContainerProxy } from "@sherpa/sandbox/cloudflare";
@@ -16,6 +18,12 @@ export default {
       return handleWebhook(request, {
         secret: env.GITHUB_WEBHOOK_SECRET,
         start: (job) => dispatchReview(env.REVIEW_WORKFLOW, job),
+        ...(env.INDEX_ENABLED === "true"
+          ? {
+              startIndex: (job: import("@sherpa/repository-index").RepositoryIndexJob) =>
+                dispatchIndex(env.INDEX_WORKFLOW, job),
+            }
+          : {}),
       });
     if (
       url.pathname === "/setup" ||

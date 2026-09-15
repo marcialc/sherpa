@@ -310,6 +310,30 @@ describe("GitHub App authentication", () => {
     expect(mocked).toHaveBeenCalledTimes(3);
   });
 
+  it("issues index tokens from repository identity with the same installation and repository isolation", async () => {
+    const mocked = vi.fn<Fetcher>(async (input, init) => {
+      if (String(input).endsWith("/installation")) return json({ id: 17, app_id: 123 });
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        permissions: { contents: "read", pull_requests: "read" },
+      });
+      return json({
+        token: "index-token",
+        expires_at: new Date(Date.now() + 3600000).toISOString(),
+        permissions: { contents: "read", pull_requests: "read" },
+        repositories: [repo],
+      });
+    });
+    const scope = { installationId: 17, repositoryId: 42, owner: "acme", repo: "example" };
+    const app = new GitHubApp({ appId: 123, privateKey, fetch: mocked });
+    expect(await app.installationRepositoryToken(scope)).toBe("index-token");
+    await expect(
+      app.installationRepositoryToken({ ...scope, installationId: 999 }),
+    ).rejects.toThrow("GITHUB_INSTALLATION_SCOPE_MISMATCH");
+    await expect(app.installationRepositoryToken({ ...scope, repositoryId: 999 })).rejects.toThrow(
+      "GITHUB_TOKEN_SCOPE_MISMATCH",
+    );
+  });
+
   it("rejects mismatched installations before token creation and hides key failures", async () => {
     const mocked = vi.fn<Fetcher>(async () => json({ id: 99, app_id: 123 }));
     await expect(

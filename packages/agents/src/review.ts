@@ -35,6 +35,7 @@ import {
 } from "./output-schema";
 import { EvidenceStore } from "./evidence";
 import { emitDiagnostic, type ReviewDiagnostic } from "./diagnostics";
+import { retrieveDiscoveryContext, type RetrieveRepositoryContext } from "./repository-context";
 import {
   analysisResponseSchema,
   analysisContextSchema,
@@ -73,6 +74,7 @@ export type RunReviewOptions = {
   previousFindings?: Finding[];
   incrementalBaseSha: string;
   reviewStartedAt?: number;
+  retrieveRepositoryContext?: RetrieveRepositoryContext;
   onInvalidOutput?: (agent: string, phase: string, diagnostic: OutputDiagnostic) => void;
   onDiagnostic?: (event: ReviewDiagnostic) => void;
 };
@@ -181,6 +183,36 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     return finish();
   }
   const code = codeContext(options, files);
+  // A truncated PR file list cannot safely exclude every changed path from lagging hints.
+  const repositoryContext =
+    options.retrieveRepositoryContext && !context.filesTruncated
+      ? await retrieveDiscoveryContext(
+          options.retrieveRepositoryContext,
+          {
+            installationId: context.job.installationId,
+            repositoryId: context.job.repositoryId,
+            headSha: context.headSha,
+            baseSha: context.baseSha,
+            query: files
+              .slice(0, 20)
+              .map((file) => file.path)
+              .join(" ")
+              .slice(0, 500),
+            // Include all PR changes, even when this review investigates only an increment.
+            changedPaths: [
+              ...new Set(
+                context.files.flatMap((file) => [
+                  file.path,
+                  ...(file.previousPath ? [file.previousPath] : []),
+                ]),
+              ),
+            ],
+            limit: 6,
+          },
+          options.onDiagnostic,
+          Math.min(1500, Math.max(1, budget.remainingMs() / 20)),
+        )
+      : undefined;
   if (code.truncated || files.some((file) => !file.patch && file.status !== "removed"))
     incomplete("INCOMPLETE_DIFF_COVERAGE");
   if (files.some((file) => file.deletions > 0 && !reviewableLines(file).length))
@@ -356,6 +388,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
             files: code.files.map((file) => ({ path: file.path, patch: file.patch.slice(0, 300) })),
           },
           deterministicAgents: risk.agents,
+          ...(repositoryContext ? { untrustedRepositoryContext: repositoryContext } : {}),
         },
         z.object({ agents: z.array(agentNameSchema).max(3) }).strict(),
         300,
@@ -386,6 +419,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         untrustedCode: code,
         validationPolicy: config.validation,
         discoveryRoundsRemaining: 2,
+        ...(repositoryContext ? { untrustedRepositoryContext: repositoryContext } : {}),
       };
       // Invalid model anchors are correctable output errors, not evidence to silently drop.
       const anchoredAnalysisSchema = analysisResponseSchema

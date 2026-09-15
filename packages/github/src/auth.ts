@@ -2,6 +2,7 @@ import { reviewJobSchema, type ReviewJob } from "@sherpa/schemas";
 import { z } from "zod";
 import { GitHubApi, GitHubError, type Fetcher } from "./http";
 import { repositorySchema } from "./webhook";
+import { repositoryIdentitySchema, type RepositoryIdentity } from "./repository";
 
 export type AppIdentity = { appId: number; botLogin: string };
 const encoder = new TextEncoder();
@@ -96,7 +97,14 @@ export class GitHubApp {
     input: ReviewJob,
     permissions: "read" | "write" | "checks" = "read",
   ): Promise<string> {
-    const job = reviewJobSchema.parse(input);
+    return this.installationRepositoryToken(reviewJobSchema.parse(input), permissions);
+  }
+
+  async installationRepositoryToken(
+    input: RepositoryIdentity,
+    permissions: "read" | "write" | "checks" = "read",
+  ): Promise<string> {
+    const job = repositoryIdentitySchema.parse(input);
     const api = await this.api();
     const installation = await api.request(`/repos/${job.owner}/${job.repo}/installation`, {
       maxBytes: 131072,

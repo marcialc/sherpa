@@ -185,6 +185,8 @@ The [self-hosting guide](docs/self-hosting.md) walks you through:
 
 **[Follow the self-hosting guide →](docs/self-hosting.md)**
 
+Sherpa can persist versioned repository discovery metadata in D1 and update it incrementally on default-branch pushes. [Repository indexing](docs/repository-index.md) explains setup, limits and retrieval. Indexed context guides investigation; findings still require immutable source verification and executor-attested evidence.
+
 ## Develop locally
 
 To explore the code and run the automated tests:

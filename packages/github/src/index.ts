@@ -22,3 +22,9 @@ export {
   selectFindings,
   trustedSetupOrigin,
 } from "./review";
+
+export {
+  GitHubRepositorySource,
+  repositoryIdentitySchema,
+  type RepositoryIdentity,
+} from "./repository";

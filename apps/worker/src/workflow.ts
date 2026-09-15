@@ -18,11 +18,17 @@ import {
   type PipelineServices,
 } from "@sherpa/workflow";
 import { log } from "@sherpa/shared";
+import {
+  D1RepositoryIndexStore,
+  RepositoryRetriever,
+  getIndexConfig,
+} from "@sherpa/repository-index";
 import { unconfiguredBillingResult } from "./billing";
 import { getSettings, type RuntimeEnv } from "./settings";
 import { withReviewCheck } from "./progress";
 import { reviewSandboxId } from "./sandbox-id";
 import { createReviewLogger } from "./review-logging";
+import { logIndex } from "./index-logging";
 
 export type WorkflowParams = ReviewJob & { recoveryOnly?: boolean };
 export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParams> {
@@ -224,6 +230,15 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
             durationMs: Date.now() - startedAt,
           });
           const result = await runReview({
+            retrieveRepositoryContext: async (query) => {
+              // Configuration/database errors are contained by runReview's discovery timeout.
+              const retriever = new RepositoryRetriever(
+                new D1RepositoryIndexStore(this.env.INDEX_DB.withSession("first-primary")),
+                getIndexConfig(this.env),
+                logIndex,
+              );
+              return retriever.retrieve(query);
+            },
             onDiagnostic: diagnostic,
             context,
             files,

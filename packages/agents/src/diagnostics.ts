@@ -2,6 +2,9 @@ import type { ModelAttemptDiagnostic } from "@sherpa/models";
 import type { AgentName, ModelRef, ToolRequest, ToolResult } from "@sherpa/schemas";
 
 export type ReviewDiagnostic =
+  | { event: "review.index_retrieved"; status: string; resultCount: number; durationMs: number }
+  | { event: "review.index_stale_used"; status: string; resultCount: number }
+  | { event: "review.index_retrieval_failed"; code: string; durationMs: number }
   | (ModelAttemptDiagnostic & {
       callId: number;
       agent: string;

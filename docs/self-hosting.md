@@ -297,3 +297,7 @@ When reporting a failure, copy the matching invalid-output/tool events and final
 For repository fallback, find `review.sandbox_unavailable` and inspect its `stage` and `code`. A successful container build alone does not verify runtime Git access.
 
 For deeper details, see [architecture](architecture.md), [repository tools](../packages/sandbox/README.md), and the [validation record](validation.md).
+
+## Repository indexing
+
+Sherpa includes a separate repository index Workflow and a private D1 database. See [repository indexing setup and configuration](repository-index.md#configuration-and-deployment). Enable the GitHub App's **Push** webhook subscription and apply the D1 migration before using this feature remotely. Existing Contents read permission and installation-owned Gateway setup are reused. `INDEX_ENABLED=false` disables indexing while preserving ordinary reviews.

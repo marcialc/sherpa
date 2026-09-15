@@ -45,3 +45,20 @@ After these fixes, the full suite passes 286 tests with five opt-in tests skippe
 The user explicitly deferred the live before/after model evaluation. Its runner is ready as `pnpm eval:live`; configure gateway/model/pricing values and an explicit comparison spend cap when resuming. A complete deployed review after the runtime fixes still needs to be verified.
 
 That run must confirm actual outbound Git credential interception, private/fork PR fetching, workflow/container lifecycle, model output compatibility/quality, valid real inline comments, redelivery behavior, incremental fixes and gateway usage accounting. Verify nested script isolation on the deployed container before enabling project validation; leave it disabled where the runtime does not support it.
+
+## Repository index foundation, September 15
+
+Repository indexing is implemented with scoped D1 metadata/postings, immutable revision membership, fenced atomic publication, JS/TS AST extraction, bounded installation-Gateway summaries, default-branch push updates and independent PR bootstraps. Discovery hints remain outside executor evidence and judge inputs.
+
+Validation completed:
+
+- `pnpm exec vitest run --maxWorkers 4`: 455 passed, five opt-in tests skipped, across 38 files. The first unrestricted `pnpm test` run timed out in an existing real-Git sandbox test; the bounded-concurrency full rerun passed.
+- `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, and `git diff --check`: passed.
+- `pnpm typegen`: generated the D1 and indexing Workflow bindings.
+- Local `wrangler d1 migrations apply`: all eight migration statements applied successfully.
+- `pnpm build`: Worker/container deployment dry run passed; Worker gzip bundle approximately 2.1 MiB.
+- `pnpm test:index-runtime`: actual local workerd parsed TypeScript, staged/published D1 metadata and retrieved an exact path/symbol. This exposed and fixed the compiler's bundled CommonJS filename initialization; Wrangler now supplies virtual filename/directory defines.
+
+New tests exercise source filtering/malformed input, bounded summaries, immutable GitHub blobs, incremental modifications/additions/deletions/renames, interrupted/idempotent builds, expired writers, bootstrap races, version upgrades, tenant isolation, ranking, nested ignore patterns, stale-context exclusion, model failures and logging privacy. Reviewer regressions retain actual HEAD/baseline investigations, reject specialist/judge index-only citations, and prevent index-influenced routing from removing deterministic reviewers.
+
+No production database migration, deployment, GitHub review publication or paid model acceptance was performed for this feature. Before rollout, provision/migrate remote D1, enable Push webhooks and run a private-repository push/PR smoke test. Embeddings and cross-repository retrieval remain outside v1.

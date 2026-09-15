@@ -68,3 +68,13 @@ Diff, file-count, history, command, context and comment limits are intentional r
 - [OpenAI chat API](https://developers.openai.com/api/reference/resources/chat)
 - [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)
 - [Moonshot/Kimi chat API](https://platform.kimi.ai/docs/api/chat)
+
+## Persistent repository intelligence
+
+The repository index is contextual retrieval data and is not admissible evidence for review findings.
+
+A separate `RepositoryIndexWorkflow` reads immutable GitHub commit/tree/blob data using the existing repository-scoped installation token layer. JS/TS AST extraction and bounded deterministic or installation-Gateway summaries populate D1 file records, lexical postings and revision membership. Unchanged blobs reuse their metadata and summaries; deleted and renamed paths are reflected in a new staged membership. Expiring leases, previous-pointer checks and transactional publication prevent incomplete revisions or stale writers from becoming active. Default-branch pushes advance indexing; PR base events bootstrap or upgrade incompatible representations independently of review execution.
+
+The review router and specialist ANALYZE receive at most 3 KiB of explicitly untrusted discovery hints, with exact/base/stale revision labels and a short timeout. Lagging hints exclude every changed PR path. The index supplies no tool results or evidence IDs. VERIFY, independent judgment, executor attestation and immutable Sandbox tools retain their existing roles. Unavailable indexing never blocks ordinary investigation.
+
+See [repository index architecture](repository-index.md) for storage rationale, lifecycle, incremental changes, revision rules, ranking, configuration, telemetry, deployment and privacy boundaries.
