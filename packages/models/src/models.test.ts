@@ -5,6 +5,7 @@ import {
   ProviderError,
   ReviewBudget,
   estimateUsageUsd,
+  schemaDiagnostic,
   type ModelProvider,
   type ModelResponse,
   type PricingTable,
@@ -235,6 +236,124 @@ describe("shared budget reservations", () => {
     await expect(budget.invoke({ ...args, provider })).rejects.toThrow("MODEL_INVALID_JSON");
     expect(budget.cost().calls).toHaveLength(1);
     expect(budget.cost().calls[0]!.inputTokens).toBe(100);
+  });
+  it.each(["{bad}", '{"ok":"true"}'])(
+    "repairs invalid output once and charges both responses: %s",
+    async (invalid) => {
+      const complete = vi
+        .fn<ModelProvider["complete"]>()
+        .mockResolvedValueOnce(response(invalid))
+        .mockResolvedValueOnce(response());
+      const onInvalidOutput = vi.fn();
+      const budget = new ReviewBudget(
+        { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 1000 },
+        pricing,
+      );
+      expect(
+        await budget.invoke({
+          ...args,
+          provider: { complete },
+          repairInvalidOutput: true,
+          onInvalidOutput,
+        }),
+      ).toEqual({ ok: true });
+      expect(budget.cost().calls).toHaveLength(2);
+      expect(budget.cost().totalEstimatedUsd).toBeCloseTo(0.00028);
+      expect(onInvalidOutput).toHaveBeenCalledOnce();
+      const corrected = complete.mock.calls[1]![0];
+      expect(corrected.system).toContain(args.system);
+      expect(corrected.system).not.toContain(invalid);
+      expect(JSON.parse(corrected.user)).toMatchObject({
+        originalTask: args.user,
+        untrustedPreviousResponse: invalid,
+      });
+    },
+  );
+  it("fails closed after one unsuccessful format correction", async () => {
+    const complete = vi.fn<ModelProvider["complete"]>().mockResolvedValue(response('{"ok":null}'));
+    const onInvalidOutput = vi.fn();
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 8, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    await expect(
+      budget.invoke({
+        ...args,
+        provider: { complete },
+        repairInvalidOutput: true,
+        onInvalidOutput,
+      }),
+    ).rejects.toThrow("MODEL_INVALID_SCHEMA");
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(onInvalidOutput).toHaveBeenCalledTimes(2);
+    expect(budget.cost().calls).toHaveLength(2);
+  });
+  it.each([
+    { maxCalls: 2, maxUsd: 1, preserve: { calls: 1, usd: 0 }, error: "MODEL_CALL_LIMIT" },
+    { maxCalls: 4, maxUsd: 0.002, preserve: { calls: 0, usd: 0.0005 }, error: "MODEL_COST_LIMIT" },
+  ])(
+    "keeps the judge reserve when correction reaches $error",
+    async ({ maxCalls, maxUsd, preserve, error }) => {
+      const complete = vi.fn<ModelProvider["complete"]>().mockResolvedValue(response("{}"));
+      const budget = new ReviewBudget({ maxUsd, maxCalls, deadline: Date.now() + 1000 }, pricing);
+      await expect(
+        budget.invoke({ ...args, provider: { complete }, preserve, repairInvalidOutput: true }),
+      ).rejects.toThrow(error);
+      expect(complete).toHaveBeenCalledOnce();
+      expect(budget.cost().calls).toHaveLength(1);
+    },
+  );
+  it("does not start a correction after entering the reserved judge time", async () => {
+    let now = 0;
+    const complete = vi.fn<ModelProvider["complete"]>(async () => {
+      now = 950;
+      return response("{}");
+    });
+    const budget = new ReviewBudget({ maxUsd: 1, maxCalls: 4, deadline: 1000 }, pricing, () => now);
+    await expect(
+      budget.invoke({
+        ...args,
+        provider: { complete },
+        preserve: { calls: 1, usd: 0, ms: 100 },
+        repairInvalidOutput: true,
+      }),
+    ).rejects.toThrow("MODEL_TIME_RESERVE");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+  it("bounds correction input before sending it to the model", async () => {
+    const complete = vi
+      .fn<ModelProvider["complete"]>()
+      .mockResolvedValue(response("x".repeat(65000)));
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 4, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    await expect(
+      budget.invoke({ ...args, provider: { complete }, repairInvalidOutput: true }),
+    ).rejects.toThrow("MODEL_INPUT_LIMIT");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+  it("logs bounded schema paths without model-controlled keys or values", () => {
+    const invalid = z
+      .object({
+        assessments: z.array(z.object({ reason: z.string().min(8) })),
+        secretRecord: z.record(z.string(), z.number()),
+      })
+      .safeParse({
+        assessments: [{}, { reason: "token" }],
+        secretRecord: Object.fromEntries(
+          Array.from({ length: 20 }, (_, i) => [`private-source-${i}`, "private-token"]),
+        ),
+      });
+    expect(invalid.success).toBe(false);
+    if (invalid.success) throw new Error("Expected schema rejection");
+    const diagnostic = schemaDiagnostic(invalid.error);
+    expect(diagnostic.issues).toHaveLength(6);
+    expect(diagnostic.issues.slice(0, 2)).toEqual([
+      "assessments.0.reason:invalid_type",
+      "assessments.1.reason:too_small",
+    ]);
+    expect(JSON.stringify(diagnostic)).not.toMatch(/private|secretRecord|token/);
   });
   it("enforces deadlines even when an adapter ignores the abort signal", async () => {
     const provider = { complete: vi.fn().mockReturnValue(new Promise(() => {})) };

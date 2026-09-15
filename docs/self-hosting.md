@@ -285,4 +285,8 @@ GitHub-triggered reviews still need a gateway saved through the local `/setup` p
 | **Review was discarded as stale**            | The PR changed while the review ran. Check the newer commit's Workflow.                                                                                                                                                                                          |
 | **Publication is uncertain**                 | Check whether the review already exists. Recovery checks GitHub without blindly repeating the review POST.                                                                                                                                                       |
 
+For `MODEL_INVALID_SCHEMA` or `MODEL_INVALID_JSON`, find `review.model_invalid_output` in Worker Observability for the matching review ID. For example, `stage: testing_VERIFY` and `code: MODEL_INVALID_SCHEMA:assessments.0.reason:invalid_type` identify a missing or incorrectly typed reason. A corrected response may let the step finish; two invalid responses leave it incomplete. Sherpa disables AI Gateway request/response payload logging, so “Not available” there is expected. Diagnose schema failures using these safe field paths rather than enabling repository-content logging.
+
+For repository fallback, find `review.sandbox_unavailable` and inspect its `stage` and `code`. A successful container build alone does not verify runtime Git access.
+
 For deeper details, see [architecture](architecture.md), [repository tools](../packages/sandbox/README.md), and the [validation record](validation.md).

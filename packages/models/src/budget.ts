@@ -6,6 +6,7 @@ import {
   type ModelResponse,
   type TokenUsage,
 } from "./providers";
+import { outputRepairInstruction, schemaDiagnostic, type OutputDiagnostic } from "./output";
 
 export type ModelPrice = {
   inputUsdPerMillion: number;
@@ -182,10 +183,9 @@ export class ReviewBudget {
     outputTokens: number;
     schema: z.ZodType<T>;
     preserve?: BudgetReserve;
+    repairInvalidOutput?: boolean;
+    onInvalidOutput?: (diagnostic: OutputDiagnostic) => void;
   }): Promise<T> {
-    // A UTF-8 byte per token plus framing overhead is deliberately conservative.
-    const inputBound = new TextEncoder().encode(args.system + args.user).byteLength + 1024;
-    if (inputBound > 65000) throw new BudgetError("MODEL_INPUT_LIMIT");
     if (
       !Number.isSafeInteger(args.outputTokens) ||
       args.outputTokens < 1 ||
@@ -193,7 +193,13 @@ export class ReviewBudget {
     )
       throw new BudgetError("INVALID_TOKEN_BOUND");
     const preserve = args.preserve ?? { usd: 0, calls: 0 };
+    let system = args.system;
+    let user = args.user;
+    let repaired = false;
     for (let attempt = 0; ; attempt++) {
+      // Reserve the complete correction prompt too; repairs cannot consume the judge reserve.
+      const inputBound = new TextEncoder().encode(system + user).byteLength + 1024;
+      if (inputBound > 65000) throw new BudgetError("MODEL_INPUT_LIMIT");
       const ticket = this.reserve(args.ref, args.agent, inputBound, args.outputTokens, preserve);
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -211,8 +217,8 @@ export class ReviewBudget {
         result = await Promise.race([
           args.provider.complete({
             model: args.ref.model,
-            system: args.system,
-            user: args.user,
+            system,
+            user,
             maxOutputTokens: args.outputTokens,
             signal: controller.signal,
           }),
@@ -237,14 +243,26 @@ export class ReviewBudget {
       this.settle(ticket, result);
       this.assertTime();
       let parsed: unknown;
+      let diagnostic: OutputDiagnostic | undefined;
       try {
         parsed = JSON.parse(result.text);
       } catch {
-        throw new ProviderError("MODEL_INVALID_JSON");
+        diagnostic = { code: "MODEL_INVALID_JSON", issues: ["$:invalid_json"] };
       }
-      const validated = args.schema.safeParse(parsed);
-      if (!validated.success) throw new ProviderError("MODEL_INVALID_SCHEMA");
-      return validated.data;
+      if (!diagnostic) {
+        const validated = args.schema.safeParse(parsed);
+        if (validated.success) return validated.data;
+        diagnostic = schemaDiagnostic(validated.error);
+      }
+      args.onInvalidOutput?.(diagnostic);
+      if (!args.repairInvalidOutput || repaired) throw new ProviderError(diagnostic.code);
+      repaired = true;
+      system = `${args.system}\n${outputRepairInstruction}`;
+      user = JSON.stringify({
+        originalTask: args.user,
+        untrustedPreviousResponse: result.text,
+        validationIssues: diagnostic.issues,
+      });
     }
   }
 }

@@ -30,8 +30,18 @@ The final full suite passes 236 tests; four opt-in Docker tests and the deferred
 
 The Docker image contains Semgrep 1.177.0, service-owned rules and checksum-pinned Bubblewrap 0.12.0. A real Semgrep execution detects the vulnerable Python fixture. OSV dependency tests validate exact npm lockfile v2/v3 coordinates, fixed API origin, bounded response processing and advisory-ID-only evidence; no advisory identifier automatically becomes a finding. Generated reproduction source uses disposable immutable snapshots and opt-in execution, with explicit failure where nested namespaces are unavailable.
 
+## Installed App troubleshooting, September 14
+
+The initial validation above preceded deployment. The user subsequently deployed Sherpa, installed its GitHub App, saved an installation gateway, and received real incomplete-review comments. Those runs exposed repository-access failures and invalid specialist output. Gateway response bodies were unavailable because Sherpa disables payload logging; the exact invalid field in those historical responses could not be recovered.
+
+A real local Wrangler/Sandbox 0.12.9 run reproduced Git's `gnutls_handshake()` failure before the trusted HTTPS outbound handler ran. Using the internal HTTP proxy hop with mandatory HTTPS forwarding then fetched `marcialc/sherpa` PR #2, verified head `20ab1819b86719a345abbc5d11c5b7821c98ebb2`, found its merge base, checked out the head, and returned the changed `packages/github/src/oauth.ts` diff. This used the actual container, ContainerProxy, and GitHub App installation authentication; no model calls or PR writes were made by this probe.
+
+Regression tests cover HTTP/HTTPS Git discovery and POST-body forwarding to HTTPS, repository/host/method/phase restrictions, and credential/header handling. Model tests cover a single format correction, original-schema enforcement, bounded diagnostic paths, usage accounting, and judge reserves. Protocol replay repairs a missing specialist reason while still rejecting fabricated evidence; an attested authorization regression still reaches Must Fix. These are deterministic protocol tests, not a measured improvement in model reasoning.
+
+After these fixes, the full suite passes 286 tests with five opt-in tests skipped. `pnpm eval` passes 84 local checks with the paid test skipped. Lint, type checking, formatting, and the Worker/container deployment dry run pass. The public-PR sandbox probe above is additional runtime evidence; private/fork repositories and the production proxy still require live acceptance.
+
 ## Live acceptance still required
 
-No production Cloudflare deployment, paid model request, GitHub App installation or real PR comment was performed. The user explicitly deferred the live before/after model evaluation. Its runner is ready as `pnpm eval:live`; configure gateway/model/pricing values and an explicit comparison spend cap when resuming. Configure GitHub App secrets separately before following the README's first-real-review procedure on an installed private test repository.
+The user explicitly deferred the live before/after model evaluation. Its runner is ready as `pnpm eval:live`; configure gateway/model/pricing values and an explicit comparison spend cap when resuming. A complete deployed review after the runtime fixes still needs to be verified.
 
 That run must confirm actual outbound Git credential interception, private/fork PR fetching, workflow/container lifecycle, model output compatibility/quality, valid real inline comments, redelivery behavior, incremental fixes and gateway usage accounting. Verify nested script isolation on the deployed container before enabling project validation; leave it disabled where the runtime does not support it.

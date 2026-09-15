@@ -146,7 +146,9 @@ export class RepositorySession {
     try {
       await this.must(["mkdir", "-p", ROOT, REPO, "/tmp/sherpa-home"]);
       await this.must(["git", "init", "--bare", GIT_DIR]);
-      const remote = `https://github.com/${job.owner}/${job.repo}.git`;
+      // HTTP is confined to Cloudflare's internal ContainerProxy hop. The trusted
+      // outbound handler enforces HTTPS to GitHub and adds credentials there.
+      const remote = `http://github.com/${job.owner}/${job.repo}.git`;
       await this.must([...GIT, "remote", "add", "origin", remote]);
       await this.must(
         [

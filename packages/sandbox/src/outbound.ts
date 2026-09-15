@@ -30,7 +30,14 @@ export async function handleReviewOutbound(
   if (!parsed.success) return denied();
   const job = parsed.data;
   const url = new URL(request.url);
-  if (url.protocol !== "https:" || url.port || url.username || url.password || url.hash)
+  const internalGitHttp = policy.phase === "git" && url.protocol === "http:";
+  if (
+    (!internalGitHttp && url.protocol !== "https:") ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.hash
+  )
     return denied();
   const headers = new Headers();
   if (policy.phase === "git") {
@@ -61,8 +68,10 @@ export async function handleReviewOutbound(
     headers.set("Accept", "application/json, application/octet-stream");
   } else return denied();
   // Redirects never carry authentication or bypass host/path authorization.
+  // Plain HTTP is confined to the ContainerProxy hop; never forward it to the public network.
+  url.protocol = "https:";
   const response = await fetcher(
-    new Request(request, {
+    new Request(new Request(url, request), {
       headers,
       redirect: "manual",
       signal: AbortSignal.timeout(30000),

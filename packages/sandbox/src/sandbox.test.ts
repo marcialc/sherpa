@@ -98,7 +98,7 @@ function fixture(extraFiles: Record<string, string> = {}) {
         arg
           .replaceAll("/workspace/sherpa", join(directory, "sandbox"))
           .replaceAll("/tmp/sherpa-home", join(directory, "home"))
-          .replace("https://github.com/example/project.git", `file://${remote}`)
+          .replace("http://github.com/example/project.git", `file://${remote}`)
           .replace("protocol.file.allow=never", "protocol.file.allow=always"),
       );
       if (spec.cwd) spec.cwd = spec.cwd.replace("/workspace/sherpa", join(directory, "sandbox"));
@@ -477,45 +477,63 @@ const policy = (phase: OutboundPolicy["phase"] = "git"): OutboundPolicy => ({
   expiresAt: Date.now() + 60000,
 });
 describe("trusted outbound credential injection", () => {
-  it("forwards the smart Git POST body only to the bound repository", async () => {
-    const token = vi.fn(async () => "installation-token");
-    const fetcher = vi.fn<typeof fetch>(async (request) => {
-      expect(request).toBeInstanceOf(Request);
-      expect(await (request as Request).text()).toBe("0000");
-      expect((request as Request).method).toBe("POST");
-      return new Response("pack");
-    });
-    const request = new Request("https://github.com/example/private.git/git-upload-pack", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-git-upload-pack-request" },
-      body: "0000",
-    });
-    expect((await handleReviewOutbound(request, policy(), token, fetcher)).status).toBe(200);
-  });
-  it("injects scoped credentials outside the container and strips attacker headers", async () => {
-    const token = vi.fn(async () => "installation-token");
-    const fetcher = vi.fn<typeof fetch>(async () => new Response("git bytes"));
-    const request = new Request(
-      "https://github.com/example/private.git/info/refs?service=git-upload-pack",
-      { headers: { Authorization: "attacker", Cookie: "attacker", "Git-Protocol": "version=2" } },
-    );
-    expect((await handleReviewOutbound(request, policy(), token, fetcher)).status).toBe(200);
-    expect(token).toHaveBeenCalledWith(outboundJob);
-    const forwarded = fetcher.mock.calls[0]?.[0] as Request;
-    expect(forwarded.headers.get("Authorization")).toBe(
-      `Basic ${btoa("x-access-token:installation-token")}`,
-    );
-    expect(forwarded.headers.has("Cookie")).toBe(false);
-    expect(forwarded.redirect).toBe("manual");
-    expect(request.headers.get("Authorization")).toBe("attacker");
-  });
+  it.each(["http", "https"])(
+    "forwards the %s Git POST body to GitHub over HTTPS",
+    async (protocol) => {
+      const token = vi.fn(async () => "installation-token");
+      const fetcher = vi.fn<typeof fetch>(async (request) => {
+        expect(request).toBeInstanceOf(Request);
+        expect(await (request as Request).text()).toBe("0000");
+        expect((request as Request).method).toBe("POST");
+        expect((request as Request).url).toBe(
+          "https://github.com/example/private.git/git-upload-pack",
+        );
+        expect((request as Request).headers.get("Authorization")).toBe(
+          `Basic ${btoa("x-access-token:installation-token")}`,
+        );
+        return new Response("pack");
+      });
+      const request = new Request(`${protocol}://github.com/example/private.git/git-upload-pack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-git-upload-pack-request" },
+        body: "0000",
+      });
+      expect((await handleReviewOutbound(request, policy(), token, fetcher)).status).toBe(200);
+    },
+  );
+  it.each(["http", "https"])(
+    "injects scoped credentials for %s Git discovery and strips attacker headers",
+    async (protocol) => {
+      const token = vi.fn(async () => "installation-token");
+      const fetcher = vi.fn<typeof fetch>(async () => new Response("git bytes"));
+      const request = new Request(
+        `${protocol}://github.com/example/private.git/info/refs?service=git-upload-pack`,
+        { headers: { Authorization: "attacker", Cookie: "attacker", "Git-Protocol": "version=2" } },
+      );
+      expect((await handleReviewOutbound(request, policy(), token, fetcher)).status).toBe(200);
+      expect(token).toHaveBeenCalledWith(outboundJob);
+      const forwarded = fetcher.mock.calls[0]?.[0] as Request;
+      expect(forwarded.url).toBe(
+        "https://github.com/example/private.git/info/refs?service=git-upload-pack",
+      );
+      expect(forwarded.headers.get("Git-Protocol")).toBe("version=2");
+      expect(forwarded.headers.get("Authorization")).toBe(
+        `Basic ${btoa("x-access-token:installation-token")}`,
+      );
+      expect(forwarded.headers.has("Cookie")).toBe(false);
+      expect(forwarded.redirect).toBe("manual");
+      expect(request.headers.get("Authorization")).toBe("attacker");
+    },
+  );
   it("denies other repositories, git writes, spoofing, expired contexts and all post-setup Git", async () => {
     const token = vi.fn(async () => "secret");
     for (const url of [
       "https://github.com/other/private.git/info/refs?service=git-upload-pack",
       "https://github.com/example/private.git/git-receive-pack",
       "https://github.com.evil.invalid/example/private.git/info/refs?service=git-upload-pack",
-      "http://github.com/example/private.git/info/refs?service=git-upload-pack",
+      "http://github.com/other/private.git/info/refs?service=git-upload-pack",
+      "http://github.com:444/example/private.git/info/refs?service=git-upload-pack",
+      "http://github.com.evil.invalid/example/private.git/info/refs?service=git-upload-pack",
       "https://github.com:444/example/private.git/info/refs?service=git-upload-pack",
       "https://evil.invalid/",
     ]) {
@@ -529,6 +547,20 @@ describe("trusted outbound credential injection", () => {
     );
     expect((await handleReviewOutbound(request, policy("closed"), token)).status).toBe(403);
     expect((await handleReviewOutbound(request, policy("packages"), token)).status).toBe(403);
+    const internalRequest = new Request(request.url.replace("https:", "http:"));
+    expect((await handleReviewOutbound(internalRequest, policy("closed"), token)).status).toBe(403);
+    expect((await handleReviewOutbound(internalRequest, policy("packages"), token)).status).toBe(
+      403,
+    );
+    expect(
+      (
+        await handleReviewOutbound(
+          new Request("http://registry.npmjs.org/package"),
+          policy("packages"),
+          token,
+        )
+      ).status,
+    ).toBe(403);
     expect(token).not.toHaveBeenCalled();
   });
   it("denies redirects and registry writes; registry fetches never receive Git credentials", async () => {

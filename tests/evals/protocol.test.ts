@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runReview, type Hypothesis, type RunReviewOptions } from "@sherpa/agents";
 import { repoConfigSchema, type Finding } from "@sherpa/schemas";
 import type { ModelProvider } from "@sherpa/models";
@@ -90,6 +90,47 @@ function options(fixture: EvalFixture, provider: ModelProvider): RunReviewOption
 }
 
 describe("paired adversarial protocol replay", () => {
+  it.each([false, true])(
+    "repairs a missing assessment reason without bypassing evidence checks (forged=%s)",
+    async (forgeDisproof) => {
+      const fixture = evalFixtures.find((item) => item.id === "authorization-bypass")!;
+      const trace = proposal(fixture);
+      let corrections = 0;
+      const provider: ModelProvider = {
+        complete: async (request) => {
+          const envelope = JSON.parse(request.user) as {
+            originalTask?: string;
+            untrustedHypotheses?: unknown[];
+          };
+          if (envelope.originalTask) {
+            corrections++;
+            return replayResponse(
+              { ...request, user: envelope.originalTask },
+              { ...trace, forgeDisproof },
+            );
+          }
+          const result = replayResponse(request, { ...trace, forgeDisproof });
+          if (envelope.untrustedHypotheses) {
+            const invalid = JSON.parse(result.text) as { assessments: { reason?: string }[] };
+            for (const assessment of invalid.assessments) delete assessment.reason;
+            return modelResponse(invalid);
+          }
+          return result;
+        },
+      };
+      const onInvalidOutput = vi.fn();
+      const result = await runReview({ ...options(fixture, provider), onInvalidOutput });
+      expect(corrections).toBe(1);
+      expect(onInvalidOutput).toHaveBeenCalledWith("lightweight", "VERIFY", {
+        code: "MODEL_INVALID_SCHEMA",
+        issues: ["assessments.0.reason:invalid_type"],
+      });
+      expect(result.coverageComplete).toBe(!forgeDisproof);
+      expect(result.findings).toHaveLength(forgeDisproof ? 0 : 1);
+      if (forgeDisproof) expect(result.warnings.join(",")).toContain("UNATTESTED_EVIDENCE");
+      else expect(result.findings[0]?.priority).toBe("must_fix");
+    },
+  );
   it("retains supported bug traces and blocks fabricated evidence accepted by the frozen protocol", async () => {
     const selected = evalFixtures.filter((fixture) =>
       [

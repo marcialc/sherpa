@@ -215,6 +215,12 @@ export class ReviewWorkflow extends WorkflowEntrypoint<RuntimeEnv, WorkflowParam
             });
           }
           const result = await runReview({
+            onInvalidOutput: (agent, phase, diagnostic) =>
+              log("review.model_invalid_output", {
+                reviewId: job.reviewId,
+                stage: `${agent}_${phase}`,
+                code: `${diagnostic.code}:${diagnostic.issues.join("|")}`,
+              }),
             context,
             files,
             tools: repositoryAvailable ? session : unavailable,

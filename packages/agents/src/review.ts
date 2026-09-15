@@ -20,6 +20,7 @@ import {
   type BudgetReserve,
   type PricingTable,
   type ProviderRegistry,
+  type OutputDiagnostic,
 } from "@sherpa/models";
 import { reviewableLines, sameFinding, severityOrder } from "./findings";
 import { routeReview } from "./routing";
@@ -61,6 +62,7 @@ export type RunReviewOptions = {
   previousFindings?: Finding[];
   incrementalBaseSha: string;
   reviewStartedAt?: number;
+  onInvalidOutput?: (agent: string, phase: string, diagnostic: OutputDiagnostic) => void;
 };
 
 const inputLimit = 48000;
@@ -221,6 +223,13 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       schema,
       outputTokens,
       preserve,
+      repairInvalidOutput: true,
+      onInvalidOutput: (diagnostic) => {
+        const phase = z
+          .object({ phase: z.enum(["ANALYZE", "VERIFY", "DECIDE"]) })
+          .safeParse(payload);
+        options.onInvalidOutput?.(agent, phase.success ? phase.data.phase : "ROUTE", diagnostic);
+      },
     });
   };
   let judgeReserve: BudgetReserve;

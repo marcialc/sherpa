@@ -14,6 +14,8 @@ GitHub does not provide an idempotency key for review creation. Sherpa records a
 
 Each analysis gets a fresh Sandbox with an unpredictable attempt suffix. The trusted Sandbox Durable Object binds it to one validated repository/installation and a short preparation phase. The outbound handler only authorizes exact smart-Git endpoints for that repository, adds a scoped installation token outside the container, rejects redirects, and disables Git access after preparation. Ordinary review has closed network access.
 
+Git uses HTTP only for the internal container-to-ContainerProxy hop. The handler rewrites authorized Git requests to HTTPS before adding authentication and forwarding to GitHub. This follows Cloudflare's internal HTTP proxy pattern and avoids the Git TLS interception handshake failure reproduced with Sandbox 0.12.9. Direct Internet access stays disabled; the container never receives the installation token. HTTP requests to package registries remain denied.
+
 Git fetches the base repository's `refs/pull/N/head`, so fork PRs need no installation on the contributor fork. The fetched commit must match the webhook SHA. The repository's Git object database is separated from the working tree; tools read immutable Git objects instead of following filesystem symlinks. Hooks, external Git protocols/diff drivers, credential helpers, and redirects are disabled.
 
 Models select validated tool objects, not command strings. The implementation builds argv vectors for reads, literal search, references, diff/show/log, and configured validation. A Python subprocess supervisor bounds bytes and time before returning results and kills runaway process groups. Paths, revisions, query sizes, output envelopes and validation scripts have separate limits.
@@ -44,9 +46,11 @@ Review cost records provider, model, agent, input/output/cache tokens when avail
 
 Structured logs contain a review ID and bounded operational metadata, not repository contents, model responses, tokens or raw exception messages. Review summaries disclose incomplete coverage without posting internal traces. Detailed results live in the private Workflow/ledger state, which must only be accessible to authorized service operators.
 
+Invalid model JSON or schema output emits `review.model_invalid_output` with the agent, phase, and bounded field-path/error-code pairs. Model-controlled record keys and all values are omitted. One format correction is allowed per invocation, subject to the same cost, call, input-size, deadline and judge reserves. The original response stays untrusted user data. Corrected output must pass the original strict schema and all subsequent evidence checks; repeated invalid output fails the review step.
+
 ## Operational boundaries
 
-This implementation supports GitHub.com. Enterprise API origins, broad monorepo build orchestration, Stripe/usage invoices, custom scanners, and GitHub Checks are separate product work. The configured Sandbox performs supported root-project checks and static scans; it does not claim support for every language, package manager version or build environment.
+This implementation supports GitHub.com. Enterprise API origins, broad monorepo build orchestration, Stripe/usage invoices, and custom scanners are separate product work. The configured Sandbox performs supported root-project checks and static scans; it does not claim support for every language, package manager version or build environment.
 
 Diff, file-count, history, command, context and comment limits are intentional resource boundaries. Exceeding them produces incomplete coverage rather than a false assertion of a clean repository. Live GitHub/Cloudflare integration and model quality require deployment and representative PR evaluation; mock tests establish deterministic behavior, not provider reasoning quality.
 
