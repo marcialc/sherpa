@@ -190,6 +190,63 @@ describe("authenticated webhook handling", () => {
     expect(
       (await parseWebhook("pull_request", "id", { ...payload, action: "reopened" }))?.action,
     ).toBe("reopened");
+    expect(await parseWebhook("check_run", "id", { action: "completed" })).toBeNull();
+    expect(await parseWebhook("check_suite", "id", { action: "requested" })).toBeNull();
+  });
+
+  it("starts a distinct review when GitHub re-runs the Sherpa check", async () => {
+    const associated = {
+      number: 8,
+      head: { sha: headSha, repo: { id: repo.id, name: repo.name } },
+      base: { sha: baseSha, repo: { id: repo.id, name: repo.name } },
+    };
+    const checkRun = {
+      action: "rerequested",
+      installation: payload.installation,
+      repository: repo,
+      check_run: {
+        name: "Sherpa",
+        head_sha: headSha,
+        external_id: job.reviewId,
+        pull_requests: [associated],
+      },
+    };
+    const rerun = await parseWebhook("check_run", "rerun-1", checkRun);
+    expect(rerun).toMatchObject({
+      action: "rerequested",
+      installationId: 17,
+      repositoryId: 42,
+      owner: "acme",
+      repo: "example",
+      number: 8,
+      baseSha,
+      headSha,
+    });
+    expect(rerun?.reviewId).not.toBe(job.reviewId);
+    expect((await parseWebhook("check_run", "rerun-1", checkRun))?.reviewId).toBe(rerun?.reviewId);
+    expect((await parseWebhook("check_run", "rerun-2", checkRun))?.reviewId).not.toBe(
+      rerun?.reviewId,
+    );
+    expect(
+      await parseWebhook("check_run", "rerun-1", {
+        ...checkRun,
+        check_run: { ...checkRun.check_run, pull_requests: [] },
+      }),
+    ).toBeNull();
+    const suite = await parseWebhook("check_suite", "rerun-suite", {
+      action: "rerequested",
+      installation: payload.installation,
+      repository: repo,
+      check_suite: { head_sha: headSha, pull_requests: [associated] },
+    });
+    expect(suite).toMatchObject({ action: "rerequested", number: 8, headSha });
+    expect(suite?.reviewId).not.toBe(job.reviewId);
+    await expect(
+      parseWebhook("check_run", "rerun-1", {
+        ...checkRun,
+        check_run: { ...checkRun.check_run, name: "Other" },
+      }),
+    ).rejects.toThrow("INVALID_WEBHOOK_PAYLOAD");
   });
 });
 

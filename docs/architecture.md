@@ -2,7 +2,7 @@
 
 ## Durable orchestration
 
-The webhook Worker verifies HMAC over the exact bounded body, validates GitHub's event shape, and creates a deterministic Workflow ID from installation/repository/PR/base/head. It never performs repository or model work in the request. A failed create is only treated as duplicate when an existing Workflow can be confirmed.
+The webhook Worker verifies HMAC over the exact bounded body, validates GitHub's event shape, and creates a deterministic Workflow ID from installation/repository/PR/base/head. Re-running the Sherpa check or its check suite from GitHub is a new job: that ID also includes the delivery so a completed commit can be reviewed again without colliding with the original Workflow. It never performs repository or model work in the request. A failed create is only treated as duplicate when an existing Workflow can be confirmed.
 
 Workflows own long-running execution and checkpoint trusted configuration, analysis, and publication. Read stages use limited exponential retries. Analysis and publication have no automatic stage retries: replaying paid calls or non-idempotent writes can be costly or duplicate comments. A durable analysis reservation also prevents a crashed, uncheckpointed analysis from starting paid calls again; such a run fails closed. Checkpoint outputs contain bounded review data, never tokens or private keys, and are marked sensitive.
 

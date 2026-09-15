@@ -64,11 +64,11 @@ Under **Repository permissions**, set:
 | Pull requests | Read and write |
 | Checks        | Read and write |
 
-Subscribe to **Pull request** events. Choose **Any account** if other people should be able to install your App; otherwise restrict it to your own account. GitHub's [App registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) explains these settings.
+Subscribe to **Pull request** events. GitHub also sends **Check run** and **Check suite** events to Apps with Checks write access; Sherpa uses the `rerequested` actions when someone re-runs the Sherpa check in GitHub. Choose **Any account** if other people should be able to install your App; otherwise restrict it to your own account. GitHub's [App registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) explains these settings.
 
 For an existing App, save the permission changes, then approve the updated permissions under **Settings → Applications → Installed GitHub Apps → Sherpa → Configure**. Updating the App registration alone does not grant the new permissions to existing installations.
 
-Sherpa creates a **Sherpa** check on the reviewed commit when its Workflow starts. It moves from queued to in progress after acquiring the PR's review lock, then shows the review result. Must-fix findings and incomplete reviews fail the check; approved reviews with non-blocking comments pass. Skipped and superseded reviews are marked accordingly. The check is separate from GitHub Actions CI and Cloudflare Workers Builds.
+Sherpa creates a **Sherpa** check on the reviewed commit when its Workflow starts. It moves from queued to in progress after acquiring the PR's review lock, then shows the review result. Must-fix findings and incomplete reviews fail the check; approved reviews with non-blocking comments pass. Skipped and superseded reviews are marked accordingly. Re-running that check, or its check suite, from the pull request Checks tab starts a new review of the same commit. The check is separate from GitHub Actions CI and Cloudflare Workers Builds.
 
 After creating the App:
 

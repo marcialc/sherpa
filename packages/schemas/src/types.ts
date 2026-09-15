@@ -73,7 +73,7 @@ export const reviewJobSchema = z.object({
   number: z.number().int().positive(),
   baseSha: shaSchema,
   headSha: shaSchema,
-  action: z.enum(["opened", "reopened", "synchronize"]),
+  action: z.enum(["opened", "reopened", "synchronize", "rerequested"]),
 });
 export type ReviewJob = z.infer<typeof reviewJobSchema>;
 export type ChangedFile = {

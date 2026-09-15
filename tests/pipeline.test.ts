@@ -159,7 +159,12 @@ function setup(
   };
   return { services, steps, posts, requests, store };
 }
-async function signedRequest(value: unknown, secret: string) {
+async function signedRequest(
+  value: unknown,
+  secret: string,
+  event = "pull_request",
+  deliveryId = "12345678-1234-1234-1234-123456789012",
+) {
   const body = JSON.stringify(value);
   const key = await crypto.subtle.importKey(
     "raw",
@@ -173,8 +178,8 @@ async function signedRequest(value: unknown, secret: string) {
     method: "POST",
     body,
     headers: {
-      "x-github-event": "pull_request",
-      "x-github-delivery": "12345678-1234-1234-1234-123456789012",
+      "x-github-event": event,
+      "x-github-delivery": deliveryId,
       "x-hub-signature-256": `sha256=${Buffer.from(signature).toString("hex")}`,
     },
   });
@@ -244,6 +249,54 @@ describe("webhook to workflow to review", () => {
     const duplicate = await handleWebhook(await signedRequest(webhook, deps.secret), deps);
     expect(await duplicate.json()).toMatchObject({ status: "duplicate" });
     expect(fixture.posts).toHaveLength(1);
+  });
+  it("starts a new review when GitHub re-runs the Sherpa check", async () => {
+    const fixture = setup();
+    let accepted: ReviewJob | undefined;
+    const deps = {
+      secret: "webhook-secret",
+      start: async (job: ReviewJob) => {
+        accepted = job;
+        const result = await runPipeline(job, fixture.steps, fixture.services);
+        return result.status === "duplicate" ? ("duplicate" as const) : ("started" as const);
+      },
+    };
+    await handleWebhook(await signedRequest(webhook, deps.secret), deps);
+    expect(fixture.posts).toHaveLength(1);
+    const originalReviewId = accepted!.reviewId;
+    const rerun = await handleWebhook(
+      await signedRequest(
+        {
+          action: "rerequested",
+          installation: { id: webhook.installation.id },
+          repository: webhook.repository,
+          check_run: {
+            name: "Sherpa",
+            head_sha: webhook.pull_request.head.sha,
+            external_id: originalReviewId,
+            pull_requests: [
+              {
+                number: webhook.number,
+                head: { sha: webhook.pull_request.head.sha },
+                base: {
+                  sha: webhook.pull_request.base.sha,
+                  repo: { id: webhook.repository.id, name: webhook.repository.name },
+                },
+              },
+            ],
+          },
+        },
+        deps.secret,
+        "check_run",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      ),
+      deps,
+    );
+    expect(rerun.status).toBe(202);
+    expect(await rerun.json()).toMatchObject({ status: "started" });
+    expect(fixture.posts).toHaveLength(2);
+    expect(accepted?.action).toBe("rerequested");
+    expect(accepted?.reviewId).not.toBe(originalReviewId);
   });
   it("publishes a failed review without candidates or an incremental checkpoint for malformed model output", async () => {
     const fixture = setup({ malformed: true });

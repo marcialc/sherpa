@@ -29,7 +29,7 @@ Sherpa reads the changes in a pull request, investigates possible problems, and 
 
 - **Feedback you can act on.** Findings explain what is wrong, when it happens, and why it matters.
 - **A clear merge decision.** Only verified **Must Fix** findings request changes.
-- **Reviews as you work.** Opening, reopening, or pushing commits to a pull request triggers a review.
+- **Reviews as you work.** Opening, reopening, or pushing commits to a pull request triggers a review. You can also re-run the Sherpa check from GitHub.
 - **Your AI billing.** Connect your own Cloudflare AI Gateway, with review budgets you can lower per repository.
 
 > [!NOTE]
