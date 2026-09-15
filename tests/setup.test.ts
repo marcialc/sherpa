@@ -199,3 +199,110 @@ describe("installation Gateway setup", () => {
     expect(callback.headers.get("location")).toBe("/setup");
   });
 });
+
+describe("guided setup pages", () => {
+  it("shows an install action for an empty account list using the authenticated app identity", async () => {
+    const { GitHubApp } = await import("@sherpa/github");
+    const identity = vi
+      .spyOn(GitHubApp.prototype, "getIdentity")
+      .mockResolvedValue({ appId: 123, botLogin: "my-sherpa-app[bot]" });
+    try {
+      const fetcher = githubFetch();
+      const setup = env(memorySettings(), async (input, init) =>
+        String(input).includes("/user/installations")
+          ? json({ installations: [] })
+          : fetcher(input, init),
+      );
+      setup.GITHUB_PRIVATE_KEY = "unused-in-metadata-mock";
+      const cookie = await authorize(setup);
+      const response = await handleSetup(
+        new Request("https://sherpa.example.workers.dev/setup", { headers: { cookie } }),
+        setup,
+        { fetch: setup.fetch },
+      );
+      const body = await response.text();
+      expect(body).toContain("https://github.com/apps/my-sherpa-app/installations/new");
+      expect(body).toContain("I’ve installed it · Refresh");
+      expect(body).not.toContain('name="api_token"');
+      expect(body).toContain('aria-current="step"');
+    } finally {
+      identity.mockRestore();
+    }
+  });
+  it("keeps account selection usable if the installation link cannot be retrieved", async () => {
+    const { GitHubApp } = await import("@sherpa/github");
+    const identity = vi
+      .spyOn(GitHubApp.prototype, "getIdentity")
+      .mockRejectedValue(new Error("unavailable"));
+    try {
+      const setup = env();
+      setup.GITHUB_PRIVATE_KEY = "unused-in-metadata-mock";
+      const cookie = await authorize(setup);
+      const response = await handleSetup(
+        new Request("https://sherpa.example.workers.dev/setup", { headers: { cookie } }),
+        setup,
+        { fetch: setup.fetch },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("/setup?installation_id=17");
+    } finally {
+      identity.mockRestore();
+    }
+  });
+  it("preserves escaped nonsecret inputs and identifies invalid fields without changing saved settings", async () => {
+    const settings = memorySettings();
+    settings.stored.set("17", gateway);
+    const setup = env(settings);
+    const cookie = await authorize(setup);
+    const csrf = await signValue(secret, "csrf:9:17");
+    const response = await handleSetup(
+      new Request("https://sherpa.example.workers.dev/setup/gateway", {
+        method: "POST",
+        headers: { cookie },
+        body: new URLSearchParams({
+          installation_id: "17",
+          csrf,
+          account_id: gateway.accountId,
+          gateway_id: '<invalid"name>',
+          api_token: "secret invalid token",
+        }),
+      }),
+      setup,
+      { fetch: setup.fetch },
+    );
+    const body = await response.text();
+    expect(response.status).toBe(400);
+    expect(body).toContain('value="&lt;invalid&quot;name&gt;"');
+    expect(body).toContain('aria-invalid="true"');
+    expect(body).toContain('id="gateway-id-error"');
+    expect(body).toContain('class="card edit-settings" open');
+    expect(body).not.toContain("secret invalid token");
+    expect(body).not.toContain(gateway.apiToken);
+    expect(settings.stored.get("17")).toEqual(gateway);
+    expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
+  });
+  it("removes a saved gateway only through the authorized form and returns to billing setup", async () => {
+    const settings = memorySettings();
+    settings.stored.set("17", gateway);
+    const setup = env(settings);
+    const cookie = await authorize(setup);
+    const response = await handleSetup(
+      new Request("https://sherpa.example.workers.dev/setup/gateway", {
+        method: "POST",
+        headers: { cookie },
+        body: new URLSearchParams({
+          installation_id: "17",
+          csrf: await signValue(secret, "csrf:9:17"),
+          action: "clear",
+        }),
+      }),
+      setup,
+      { fetch: setup.fetch },
+    );
+    const body = await response.text();
+    expect(settings.stored.has("17")).toBe(false);
+    expect(body).toContain("Save gateway & continue");
+    expect(body).not.toContain('name="action" value="clear"');
+    expect(body).not.toContain(gateway.apiToken);
+  });
+});
