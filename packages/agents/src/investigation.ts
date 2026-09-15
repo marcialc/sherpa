@@ -191,6 +191,16 @@ export function validateIds(expected: string[], received: string[]): void {
 function requestPath(record: EvidenceRecord): string | undefined {
   return "path" in record.request ? record.request.path : undefined;
 }
+/** Only protocol paths and fixed reason codes may leave the validator. */
+export class EvidenceAttestationError extends ProviderError {
+  constructor(
+    readonly issuePath: (string | number)[],
+    readonly rule: string,
+  ) {
+    super("UNATTESTED_EVIDENCE");
+  }
+}
+
 /** References are looked up in executor-owned records, never accepted from model JSON. */
 export function attestChecks(
   checks: EvidenceChecks,
@@ -202,17 +212,21 @@ export function attestChecks(
   const file = files.find((item) => item.path === hypothesis.path);
   if (!file) throw new ProviderError("INVALID_CHANGED_ANCHOR");
   const referenced = (claim: z.infer<typeof evidenceClaimSchema>) =>
-    claim.citations.map((citation) => {
+    claim.citations.map((citation, index) => {
       const record = records.find((item) => item.id === citation.evidenceId);
-      if (
-        !record ||
-        record.hypothesisId !== hypothesis.id ||
-        record.result.status !== "ok" ||
-        record.result.truncated ||
-        !record.result.output.includes(citation.quote) ||
-        (citation.quote.includes("FILE_ABSENT_AT_REVISION") && record.result.fileExists !== false)
-      )
-        throw new ProviderError("UNATTESTED_EVIDENCE");
+      const claimName = Object.entries(checks).find(([, value]) => value === claim)![0];
+      const fail = (field: string, rule: string): never => {
+        throw new EvidenceAttestationError([claimName, "citations", index, field], rule);
+      };
+      if (!record) return fail("evidenceId", "EVIDENCE_ID_NOT_FOUND");
+      if (record.hypothesisId !== hypothesis.id)
+        return fail("evidenceId", "EVIDENCE_WRONG_HYPOTHESIS");
+      if (record.result.status !== "ok" || record.result.truncated)
+        return fail("evidenceId", "EVIDENCE_NOT_COMPLETE");
+      if (!record.result.output.includes(citation.quote))
+        return fail("quote", "EVIDENCE_QUOTE_NOT_EXACT");
+      if (citation.quote.includes("FILE_ABSENT_AT_REVISION") && record.result.fileExists !== false)
+        return fail("quote", "EVIDENCE_ABSENCE_NOT_ATTESTED");
       return record;
     });
   for (const claim of Object.values(checks)) referenced(claim);

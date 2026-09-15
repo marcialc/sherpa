@@ -289,10 +289,14 @@ describe("repository index review integration", () => {
   it.each(["specialist", "judge"] as const)(
     "rejects index-only %s citations even when index summaries claim a bug",
     async (owner) => {
+      let corrections = 0;
       const options = singleReviewer(
         fixture((request) => {
-          const envelope = JSON.parse(request.user) as ReplayEnvelope;
-          const response = replayResponse(request, { hypothesis, relatedPath });
+          const raw = JSON.parse(request.user) as { originalTask?: string };
+          const original = raw.originalTask ? { ...request, user: raw.originalTask } : request;
+          if (raw.originalTask) corrections++;
+          const envelope = JSON.parse(original.user) as ReplayEnvelope;
+          const response = replayResponse(original, { hypothesis, relatedPath });
           const output = JSON.parse(response.text) as {
             assessments?: { checks: { disproof: { citations: unknown[] } } }[];
             decisions?: { checks: { disproof: { citations: unknown[] } } }[];
@@ -314,10 +318,17 @@ describe("repository index review integration", () => {
         }),
       );
       options.retrieveRepositoryContext = async () => indexedContext();
+      const diagnostics = vi.fn();
+      options.onInvalidOutput = diagnostics;
       const result = await runReview(options);
       expect(result.findings).toEqual([]);
       expect(result.coverageComplete).toBe(false);
-      expect(result.warnings.some((warning) => warning.includes("UNATTESTED_EVIDENCE"))).toBe(true);
+      expect(result.warnings).toContain(
+        owner === "judge" ? "JUDGE_MODEL_INVALID_SCHEMA" : "CORRECTNESS_MODEL_INVALID_SCHEMA",
+      );
+      expect(corrections).toBe(1);
+      expect(diagnostics).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(diagnostics.mock.calls)).toContain("EVIDENCE_ID_NOT_FOUND");
     },
   );
 
@@ -652,9 +663,20 @@ describe("verified investigation protocol", () => {
       fixture((request) => {
         const data = JSON.parse(request.user) as ReplayEnvelope & {
           discoveryRoundsRemaining: number;
-          untrustedCode: { files: Array<{ reviewableLines: number[] }> };
+          testPathHints: string[];
+          untrustedCode: {
+            files: Array<{
+              reviewableLines: number[];
+              addedLines: { line: number; text: string }[];
+            }>;
+          };
         };
         expect(data.untrustedCode.files[0]!.reviewableLines).toContain(hypothesis.line);
+        expect(data.untrustedCode.files[0]!.addedLines).toContainEqual({
+          line: 1,
+          text: "export const authorized = true;",
+        });
+        expect(data.testPathHints).toEqual(["src/auth.test.ts", "src/auth.spec.ts"]);
         if (data.contextDiscoveryRequired && data.discoveryRoundsRemaining === 2)
           return modelResponse({
             phase: "ANALYZE",
@@ -725,15 +747,76 @@ describe("verified investigation protocol", () => {
     expect(options.tools.execute).toHaveBeenCalled();
   });
 
-  it("fails closed on fabricated tool evidence IDs or unsupported exact quotes", async () => {
-    const options = fixture((request) =>
-      replayResponse(request, { hypothesis, relatedPath, forgeDisproof: true }),
-    );
-    const result = await runReview(options);
-    expect(result.findings).toEqual([]);
-    expect(result.coverageComplete).toBe(false);
-    expect(result.warnings.some((warning) => warning.includes("UNATTESTED_EVIDENCE"))).toBe(true);
-  });
+  it.each(["specialist", "judge"] as const)(
+    "repairs an inexact %s citation once before accepting it",
+    async (stage) => {
+      let corrections = 0;
+      const options = singleReviewer(
+        fixture((request) => {
+          const raw = JSON.parse(request.user);
+          const original = raw.originalTask ? { ...request, user: raw.originalTask } : request;
+          const envelope = JSON.parse(original.user);
+          const output = JSON.parse(replayResponse(original, { hypothesis, relatedPath }).text);
+          const target =
+            stage === "specialist" ? envelope.untrustedHypotheses : envelope.phase === "DECIDE";
+          if (target) {
+            if (raw.originalTask) {
+              corrections++;
+              expect(raw.validationDetails).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    rule: "EVIDENCE_QUOTE_NOT_EXACT",
+                    path: expect.stringContaining("checks.anchor.citations.0.quote"),
+                  }),
+                ]),
+              );
+            } else {
+              const item = stage === "specialist" ? output.assessments[0] : output.decisions[0];
+              item.checks.anchor.citations[0].quote = "export const authorized=true;";
+            }
+          }
+          return modelResponse(output);
+        }),
+      );
+      const diagnostics: unknown[] = [];
+      options.onInvalidOutput = (_agent, _phase, diagnostic) => diagnostics.push(diagnostic);
+      const result = await runReview(options);
+      expect(corrections).toBe(1);
+      expect(result.coverageComplete).toBe(true);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0]?.priority).toBe("must_fix");
+      expect(JSON.stringify(diagnostics)).not.toContain("authorized");
+    },
+  );
+
+  it.each(["id", "quote"] as const)(
+    "fails closed after one correction of a fabricated evidence %s",
+    async (kind) => {
+      let corrections = 0;
+      const options = singleReviewer(
+        fixture((request) => {
+          const raw = JSON.parse(request.user);
+          const original = raw.originalTask ? { ...request, user: raw.originalTask } : request;
+          if (raw.originalTask) corrections++;
+          const output = JSON.parse(replayResponse(original, { hypothesis, relatedPath }).text);
+          if (output.assessments) {
+            const citation = output.assessments[0].checks.disproof.citations[0];
+            if (kind === "id") citation.evidenceId = "invented-evidence";
+            else citation.quote = "There is no validation in any caller.";
+          }
+          return modelResponse(output);
+        }),
+      );
+      const diagnostics: unknown[] = [];
+      options.onInvalidOutput = (_agent, _phase, diagnostic) => diagnostics.push(diagnostic);
+      const result = await runReview(options);
+      expect(result.findings).toEqual([]);
+      expect(result.coverageComplete).toBe(false);
+      expect(result.warnings).toContain("CORRECTNESS_MODEL_INVALID_SCHEMA");
+      expect(corrections).toBe(1);
+      expect(diagnostics).toHaveLength(2);
+    },
+  );
 
   it.each(["failed", "truncated", "skipped"] as const)(
     "cannot promote evidence from a %s tool",
@@ -768,23 +851,29 @@ describe("verified investigation protocol", () => {
   });
 
   it("requires the judge's own evidence even if specialist evidence is valid", async () => {
-    const options = fixture((request) =>
-      request.model === "judge" && JSON.parse(request.user).phase === "DECIDE"
-        ? editDecision(request, (decision) => {
-            const envelope = JSON.parse(request.user) as ReplayEnvelope;
-            const foreign = envelope.attestedEvidence!.find(
-              (record) => record.owner !== "judge" && record.purpose === "investigation",
-            )!;
-            const checks = decision.checks as {
-              disproof: { statement: string; citations: unknown[] };
-            };
-            checks.disproof.citations = [{ evidenceId: foreign.id, quote: foreign.result.output }];
-          })
-        : replayResponse(request, { hypothesis, relatedPath }),
+    const options = singleReviewer(
+      fixture((input) => {
+        const raw = JSON.parse(input.user);
+        const request = raw.originalTask ? { ...input, user: raw.originalTask } : input;
+        return request.model === "judge" && JSON.parse(request.user).phase === "DECIDE"
+          ? editDecision(request, (decision) => {
+              const envelope = JSON.parse(request.user) as ReplayEnvelope;
+              const foreign = envelope.attestedEvidence!.find(
+                (record) => record.owner !== "judge" && record.purpose === "investigation",
+              )!;
+              const checks = decision.checks as {
+                disproof: { statement: string; citations: unknown[] };
+              };
+              checks.disproof.citations = [
+                { evidenceId: foreign.id, quote: foreign.result.output },
+              ];
+            })
+          : replayResponse(request, { hypothesis, relatedPath });
+      }),
     );
     const result = await runReview(options);
     expect(result.findings).toEqual([]);
-    expect(result.warnings).toContain("JUDGE_MISSING_DISPROOF_ATTEMPT");
+    expect(result.warnings).toContain("JUDGE_MODEL_INVALID_SCHEMA");
   });
 
   it("fails closed on boolean-only acceptance without factual causal checks", async () => {

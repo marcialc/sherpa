@@ -165,7 +165,7 @@ describe("paired adversarial protocol replay", () => {
       });
       expect(result.coverageComplete).toBe(!forgeDisproof);
       expect(result.findings).toHaveLength(forgeDisproof ? 0 : 1);
-      if (forgeDisproof) expect(result.warnings.join(",")).toContain("UNATTESTED_EVIDENCE");
+      if (forgeDisproof) expect(result.warnings.join(",")).toContain("MODEL_INVALID_SCHEMA");
       else expect(result.findings[0]?.priority).toBe("must_fix");
     },
   );
@@ -236,7 +236,7 @@ describe("paired adversarial protocol replay", () => {
           );
           expect(result.coverageComplete).toBe(Boolean(fixture.expected.length));
           if (!fixture.expected.length)
-            expect(result.warnings.join(",")).toContain("UNATTESTED_EVIDENCE");
+            expect(result.warnings.join(",")).toContain("MODEL_INVALID_SCHEMA");
         }
       }
     }

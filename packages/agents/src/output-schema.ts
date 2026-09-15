@@ -84,3 +84,65 @@ ${JSON.stringify(jsonSchema)}`;
   cache.set(schema, variants);
   return instruction;
 }
+
+/** Models select line references; only the executor turns them into exact quotes. */
+export function constrainNativeEvidence(
+  schema: Record<string, unknown>,
+  records: { id: string; output: string }[],
+): { schema: Record<string, unknown>; normalize: (value: unknown) => unknown } {
+  const choices = records
+    .map((record) => ({
+      id: record.id,
+      quotes: record.output
+        .split("\n")
+        .map((line, index) => ({
+          reference: /^\d+: /.test(line)
+            ? `source_line_${line.slice(0, line.indexOf(":"))}`
+            : `output_row_${index + 1}`,
+          text: line.trim(),
+        }))
+        .filter(({ text }) => text.length >= 4 && text.length <= 500),
+    }))
+    .filter((record) => record.quotes.length);
+  // Bound native schema size; other outputs retain ID constraints and exact validation.
+  const bounded =
+    choices.length > 0 && new TextEncoder().encode(JSON.stringify(choices)).length <= 16000;
+  const constrained = structuredClone(schema);
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    if ("properties" in node && node.properties && typeof node.properties === "object") {
+      const properties = node.properties as Record<string, unknown>;
+      // A finding can always use its primary line; optional wide ranges add no evidence.
+      if ("verificationRequests" in properties && "startLine" in properties)
+        properties.startLine = { type: "null" };
+      if (bounded && "evidenceId" in properties && "quote" in properties) {
+        const target = node as Record<string, unknown>;
+        for (const key of Object.keys(target)) delete target[key];
+        target.anyOf = choices.map(({ id, quotes }) => ({
+          type: "object",
+          properties: {
+            evidenceId: { type: "string", enum: [id] },
+            quote: { type: "string", enum: quotes.map(({ reference }) => reference) },
+          },
+          required: ["evidenceId", "quote"],
+          additionalProperties: false,
+        }));
+        return;
+      }
+    }
+    Object.values(node).forEach(visit);
+  };
+  visit(constrained);
+  const normalize = (value: unknown): unknown => {
+    if (!bounded || !value || typeof value !== "object") return value;
+    if (Array.isArray(value)) return value.map(normalize);
+    if ("evidenceId" in value && "quote" in value) {
+      const record = choices.find((record) => record.id === value.evidenceId);
+      const quote = record?.quotes.find((quote) => quote.reference === value.quote);
+      // Unknown IDs/references remain untouched so local validation can reject them.
+      if (quote) return { ...value, quote: quote.text };
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalize(child)]));
+  };
+  return { schema: constrained, normalize };
+}

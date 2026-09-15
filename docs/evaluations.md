@@ -23,6 +23,8 @@ On September 15, 2026, two live runs of the current reviewer using `cloudflare/o
 
 The verified blocker was the conflicting test assertion. Neither result relied on claiming an OAuth redirect vulnerability. Each current review used 12–13 model calls and approximately $0.016–$0.023 at the configured prices. These are narrow regression checks; the full live corpus and broader production accuracy remain unmeasured.
 
+The citation-repair update was also checked against PR #3's full source snapshot (`20ab1819b86719a345abbc5d11c5b7821c98ebb2`) through the configured Cloudflare model. The review completed with one Must Fix at `packages/github/src/oauth.ts:70` for the unchanged test's conflicting redirect assertion. A control using the same source with a test that accepts both options completed with no findings. These local replays did not publish GitHub reviews; they are narrow checks, not a production accuracy estimate.
+
 ## Live comparison
 
 Live model evaluation requires explicit opt-in and a spend cap. Local protocol tests demonstrate deterministic enforcement; they do not demonstrate how often a particular model discovers or misjudges real bugs.

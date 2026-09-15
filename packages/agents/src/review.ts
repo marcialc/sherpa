@@ -30,6 +30,7 @@ import { trustedRulesFor } from "./policy";
 import { judgePhasePrompt, routerPrompt, specialistPrompt, testingContextPrompt } from "./prompts";
 import {
   constrainEvidenceIds,
+  constrainNativeEvidence,
   disabledValidationTools,
   outputSchemaInstruction,
 } from "./output-schema";
@@ -45,7 +46,10 @@ import {
   judgeInvestigationSchema,
   judgeResponseSchema,
   attestChecks,
+  EvidenceAttestationError,
   validateIds,
+  type EvidenceChecks,
+  type Hypothesis,
   type EvidenceRecord,
   type VerifiedCandidate,
 } from "./investigation";
@@ -105,6 +109,9 @@ function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
       deletions: file.deletions,
       patch,
       reviewableLines: reviewableLines({ ...file, patch }).map((line) => line.line),
+      addedLines: reviewableLines({ ...file, patch })
+        .filter((line) => line.kind === "added")
+        .map(({ line, text }) => ({ line, text })),
       truncated: used < raw.byteLength,
     };
   });
@@ -320,17 +327,35 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           instruction = lines.join("\n");
         }
       }
-      const structured = supportsStructuredOutput(ref)
-        ? structuredOutput(JSON.parse(instruction.split("\n").at(-1)!))
+      const nativeRecords =
+        payload &&
+        typeof payload === "object" &&
+        "attestedEvidence" in payload &&
+        Array.isArray(payload.attestedEvidence)
+          ? (payload.attestedEvidence as EvidenceRecord[])
+              .filter(
+                (record) =>
+                  record.owner === agent &&
+                  record.result.status === "ok" &&
+                  !record.result.truncated,
+              )
+              .map((record) => ({ id: record.id, output: record.result.output }))
+          : [];
+      const nativeEvidence = supportsStructuredOutput(ref)
+        ? constrainNativeEvidence(JSON.parse(instruction.split("\n").at(-1)!), nativeRecords)
         : undefined;
+      const structured = nativeEvidence ? structuredOutput(nativeEvidence.schema) : undefined;
       return await budget.invoke({
         provider,
         ref,
         agent,
-        system: `${prompt}\n${instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. All evidence and decision requirements still apply." : ""}`,
+        system: `${prompt}\n${instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. Use null for the optional hypothesis startLine and anchor to the primary line. When quote is an enum of line references in response_format, select source_line_N for the source line prefixed N: in that evidence record, or output_row_N for its Nth output row. The executor resolves this reference to the exact quote before validation. Do not return raw source text when references are enumerated. All evidence and decision requirements still apply." : ""}`,
         user,
         schema: structured
-          ? z.preprocess(structured.normalize, configuredSchema)
+          ? z.preprocess(
+              (value) => nativeEvidence!.normalize(structured.normalize(value)),
+              configuredSchema,
+            )
           : configuredSchema,
         ...(structured ? { outputSchema: structured.schema } : {}),
         outputTokens,
@@ -354,6 +379,27 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         code: safeError(error),
       });
       throw error;
+    }
+  };
+  // Run semantic evidence validation inside the same bounded correction loop as
+  // structural validation; retain the final attestation before publication too.
+  const checkAttestation = (
+    ctx: z.RefinementCtx,
+    path: (string | number)[],
+    checks: EvidenceChecks,
+    hypothesis: Hypothesis,
+    records: EvidenceRecord[],
+    owner: AgentName | "judge",
+  ) => {
+    try {
+      attestChecks(checks, hypothesis, records, owner, files);
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error;
+      ctx.addIssue({
+        code: "custom",
+        path: [...path, ...(error instanceof EvidenceAttestationError ? error.issuePath : [])],
+        message: error instanceof EvidenceAttestationError ? error.rule : error.code,
+      });
     }
   };
   let judgeReserve: BudgetReserve;
@@ -420,6 +466,17 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         validationPolicy: config.validation,
         discoveryRoundsRemaining: 2,
         ...(repositoryContext ? { untrustedRepositoryContext: repositoryContext } : {}),
+        ...(agent === "testing"
+          ? {
+              // These are naming-convention hints, never evidence that a file exists.
+              testPathHints: files.slice(0, 4).flatMap((file) => {
+                const match = /^(.*)\.(tsx?|jsx?|[cm][jt]s)$/.exec(file.path);
+                return match && !/\.(test|spec)$/.test(match[1]!)
+                  ? [`${match[1]}.test.${match[2]}`, `${match[1]}.spec.${match[2]}`]
+                  : [];
+              }),
+            }
+          : {}),
       };
       // Invalid model anchors are correctable output errors, not evidence to silently drop.
       const anchoredAnalysisSchema = analysisResponseSchema
@@ -547,12 +604,26 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         validationPolicy: config.validation,
         followup,
       });
+      const attestedVerificationSchema = verificationResponseSchema.superRefine((value, ctx) => {
+        value.assessments.forEach((assessment, index) => {
+          const hypothesis = hypotheses.find((item) => item.id === assessment.hypothesisId);
+          if (assessment.decision === "confirmed" && assessment.checks && hypothesis)
+            checkAttestation(
+              ctx,
+              ["assessments", index, "checks"],
+              assessment.checks,
+              hypothesis,
+              records,
+              agent,
+            );
+        });
+      });
       let verification = await invoke(
         model,
         agent,
         verificationPrompt,
         payload(false),
-        verificationResponseSchema,
+        attestedVerificationSchema,
         verifyTokens,
         preserve(),
       );
@@ -580,7 +651,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           agent,
           verificationPrompt,
           payload(true),
-          verificationResponseSchema,
+          attestedVerificationSchema,
           verifyTokens,
           preserve(),
         );
@@ -705,12 +776,26 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         await evidence.capture(item.request, "judge", "investigation", item.candidateId),
       );
     const decisionPrompt = system(judgePhasePrompt("DECIDE"), "judge", judgePaths, judgeDomains);
+    const attestedJudgeSchema = judgeResponseSchema.superRefine((value, ctx) => {
+      value.decisions.forEach((item, index) => {
+        const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+        if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
+          checkAttestation(
+            ctx,
+            ["decisions", index, "checks"],
+            item.checks,
+            candidate.hypothesis,
+            judgeRecords,
+            "judge",
+          );
+      });
+    });
     let decision = await invoke(
       models.judge,
       "judge",
       decisionPrompt,
       judgeEnvelope("DECIDE"),
-      judgeResponseSchema,
+      attestedJudgeSchema,
       judgeTokens,
     );
     validateIds(
@@ -731,7 +816,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         "judge",
         decisionPrompt,
         judgeEnvelope("DECIDE", true),
-        judgeResponseSchema,
+        attestedJudgeSchema,
         judgeTokens,
       );
       validateIds(
