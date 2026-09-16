@@ -252,7 +252,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
               value.stop_reason !== "end_turn" ||
               value.content.some((part) => part.type !== "text" || !part.text)
             )
-              throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE");
+              throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE", true);
             const cachedTokens = value.usage.cache_read_input_tokens ?? 0;
             const cacheWriteTokens = value.usage.cache_creation_input_tokens ?? 0;
             return {
@@ -271,7 +271,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
           const value = parsed.data;
           const choice = value.choices[0]!;
           if (choice.finish_reason !== "stop" || choice.message.refusal)
-            throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE");
+            throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE", true);
           const cachedTokens =
             value.usage.prompt_tokens_details?.cached_tokens ?? value.usage.cached_tokens ?? 0;
           if (cachedTokens > value.usage.prompt_tokens)
