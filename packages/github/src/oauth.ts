@@ -54,8 +54,7 @@ export class GitHubUserOAuth {
     return `https://github.com/login/oauth/authorize?${new URLSearchParams({
       client_id: this.clientId,
       redirect_uri: redirectUri,
-      // Keep the URL stable so browsers can cache it.
-      state: "sherpa",
+      state,
     })}`;
   }
 
@@ -75,7 +74,7 @@ export class GitHubUserOAuth {
           client_id: this.clientId,
           client_secret: this.clientSecret,
           code: parsedCode,
-          redirect_uri: "https://sherpa.example.workers.dev/setup/callback",
+          redirect_uri: parsedRedirect,
         }),
       });
     } catch {
@@ -126,7 +125,7 @@ export class GitHubUserOAuth {
     const api = new GitHubApi(token, this.fetcher);
     const found: UserInstallation[] = [];
     let page = 1;
-    while (page <= 1) {
+    while (page <= 3) {
       const result = await api.request(`/user/installations?per_page=100&page=${page}`, {
         maxBytes: 1048576,
       });

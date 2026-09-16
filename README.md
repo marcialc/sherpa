@@ -146,8 +146,6 @@ Reviews have no dollar cap by default. They allow at most **18 model requests** 
 
 ## Customize your reviews
 
-You can tailor review scope and feedback limits for each repository.
-
 **No configuration file is required.** To change the defaults, add `.ai-reviewer.yml` at the root of the repository being reviewed:
 
 ```yaml
