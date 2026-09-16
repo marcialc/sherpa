@@ -176,45 +176,22 @@ export function constrainNativeEvidence(
               .filter((id): id is string => !!id),
           ),
         ];
-        const decisions = judge
-          ? ["reject", "accept", "merge", "needs-more-context"]
-          : ["rejected", "confirmed", "needs-more-context"];
-        const variants = (ids.length ? ids : [undefined]).flatMap((id) =>
-          decisions.map((decision) => {
-            const variant = structuredClone(original);
-            const fields = variant.properties as Record<string, unknown>;
-            if (id) fields[judge ? "candidateId" : "hypothesisId"] = { type: "string", const: id };
-            fields[judge ? "verdict" : "decision"] = { type: "string", const: decision };
-            const positive = ["accept", "merge", "confirmed"].includes(decision);
-            const required = new Set(variant.required as string[]);
-            if (positive)
-              for (const key of judge
-                ? ["checks", "usefulness", "confidence", "finalSeverity", "finalPriority"]
-                : ["checks"])
-                required.add(key);
-            else
-              for (const key of [
-                "checks",
-                "suggestedFix",
-                "usefulness",
-                "confidence",
-                "finalSeverity",
-                "finalPriority",
-                "suggestedFixSafe",
-                "mergedWith",
-              ])
-                if (key in fields) fields[key] = { type: "null" };
-            if (decision === "needs-more-context") required.add("requests");
-            else fields.requests = { type: "null" };
-            if (judge && decision === "accept") fields.mergedWith = { type: "null" };
-            if (decision === "merge") required.add("mergedWith");
-            variant.required = [...required];
-            Object.values(fields).forEach((field) => visit(field, id));
-            // Establish the explanation before choosing the decision in native decoding.
-            variant.properties = { reason: fields.reason, ...fields };
-            return variant;
-          }),
-        );
+        if (!ids.length) {
+          Object.values(properties).forEach((field) => visit(field));
+          return;
+        }
+        const variants = ids.map((id) => {
+          const variant = structuredClone(original);
+          const fields = variant.properties as Record<string, unknown>;
+          fields[judge ? "candidateId" : "hypothesisId"] = { type: "string", const: id };
+          Object.values(fields).forEach((field) => visit(field, id));
+          // Keep one structural schema per candidate. Verdict-specific requirements
+          // remain in the original Zod validator after native decoding. Expanding
+          // their cross-product here duplicated the full checks schema four times
+          // per candidate and exceeded the input limit before judge calls started.
+          variant.properties = { reason: fields.reason, ...fields };
+          return variant;
+        });
         const target = node as Record<string, unknown>;
         for (const key of Object.keys(target)) delete target[key];
         target.anyOf = variants;

@@ -267,7 +267,7 @@ describe("model response schema instructions", () => {
       [{ evidenceId: "ev-head", line: 70 }],
     );
     const root = native.schema as JsonSchema;
-    const assessment = resolve(root, root.properties!.assessments!.items!).anyOf![1]!;
+    const assessment = resolve(root, root.properties!.assessments!.items!);
     const checks = resolve(root, assessment.properties!.checks!);
     const anchor = resolve(root, checks.properties!.anchor!);
     const items = resolve(root, anchor.properties!.citations!).items!;
@@ -283,7 +283,28 @@ describe("model response schema instructions", () => {
     expect(anchor.required).toEqual(["statement", "citations"]);
   });
 
-  it("scopes candidate citations to independently collected evidence without biasing decisions", () => {
+  it("keeps a one-candidate judge schema below the model input reserve", () => {
+    const output = Array.from({ length: 60 }, (_, line) => `${line + 1}: ${"x".repeat(75)}`).join(
+      "\n",
+    );
+    const native = constrainNativeEvidence(
+      generated(judgeResponseSchema),
+      [
+        { id: "head", output, hypothesisId: "correctness-0" },
+        { id: "base", output, hypothesisId: "correctness-0" },
+        { id: "investigation", output, hypothesisId: "correctness-0" },
+      ],
+      [{ evidenceId: "head", line: 30 }],
+      ["investigation"],
+    );
+    const wireBytes = new TextEncoder().encode(
+      JSON.stringify(structuredOutput(native.schema).schema),
+    ).byteLength;
+    // Leave more than half of the 65 KB model input bound for prompts and evidence.
+    expect(wireBytes).toBeLessThan(30000);
+  });
+
+  it("bounds judge schema growth while retaining candidate and citation choices", () => {
     const native = constrainNativeEvidence(
       generated(judgeResponseSchema),
       [
@@ -304,14 +325,17 @@ describe("model response schema instructions", () => {
     );
     const root = native.schema as JsonSchema;
     const variants = resolve(root, root.properties!.decisions!.items!).anyOf!;
-    expect(variants).toHaveLength(8);
-    const accept = variants[1]!;
-    expect(accept.properties!.verdict!.const).toBe("accept");
-    expect(accept.required).toContain("checks");
-    expect(accept.properties!.requests).toEqual({ type: "null" });
-    expect(Object.keys(accept.properties!)[0]).toBe("reason");
-    expect(accept.properties!.candidateId!.const).toBe("testing-0");
-    const checks = resolve(root, accept.properties!.checks!);
+    expect(variants).toHaveLength(2);
+    const decision = variants[0]!;
+    expect(Object.keys(decision.properties!)[0]).toBe("reason");
+    expect(decision.properties!.candidateId!.const).toBe("testing-0");
+    expect(resolve(root, decision.properties!.verdict!).enum).toEqual([
+      "accept",
+      "reject",
+      "merge",
+      "needs-more-context",
+    ]);
+    const checks = resolve(root, decision.properties!.checks!);
     const disproof = resolve(root, checks.properties!.disproof!);
     expect(
       resolve(root, disproof.properties!.citations!).items!.anyOf![0]!.properties!.evidenceId!.enum,
