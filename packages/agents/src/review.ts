@@ -761,8 +761,6 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     (candidate, index) =>
       !candidates.slice(0, index).some((previous) => sameHypothesis(previous, candidate)),
   );
-  let judged = unique.slice(0, maxCandidates);
-  if (judged.length < unique.length) incomplete("CANDIDATE_LIMIT");
   const compact = (candidate: VerifiedCandidate) => ({
     id: candidate.id,
     originatingAgent: candidate.originatingAgent,
@@ -776,238 +774,263 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       verificationRequests: candidate.hypothesis.verificationRequests,
     },
   });
-  // Drop complete candidates rather than truncating any attested evidence mid-record.
-  while (
-    judged.length &&
-    bytes(
-      JSON.stringify({
-        untrustedCode: code,
-        unverifiedCandidates: judged.map(compact),
-      }),
-    ) > 24000
-  ) {
-    judged = judged.slice(0, -1);
-    incomplete("JUDGE_INPUT_LIMIT");
-  }
-  if (!judged.length) return finish();
-  const judgeRecords: EvidenceRecord[] = [];
-  const dropLastJudged = (code: string) => {
-    incomplete(code);
-    const dropped = judged.pop();
-    if (!dropped) return;
-    for (let index = judgeRecords.length - 1; index >= 0; index--)
-      if (judgeRecords[index]!.hypothesisId === dropped.id) judgeRecords.splice(index, 1);
-  };
   const inputLimitWarning = (error: unknown) => {
     const code = safeError(error);
     if (code === "MODEL_INPUT_LIMIT") return "JUDGE_MODEL_INPUT_LIMIT";
     if (code === "INVESTIGATION_INPUT_LIMIT") return "JUDGE_INPUT_LIMIT";
     return undefined;
   };
-  const judgeEnvelope = (phase: "VERIFY" | "DECIDE", followup = false) => ({
-    phase,
-    untrustedCode: code,
-    unverifiedCandidates: judged.map(compact),
-    attestedEvidence: judgeRecords,
-    validationPolicy: config.validation,
-    followup,
-    ...(phase === "DECIDE" ? { untrustedPullRequestContext: prContext } : {}),
+  const judgeBatches: VerifiedCandidate[][] = [];
+  for (let index = 0; index < unique.length; index += maxCandidates)
+    judgeBatches.push(unique.slice(index, index + maxCandidates));
+  const accepted: Finding[] = [];
+  let judgeRetrievalRemaining = 4;
+  const decideCost = budget.maximumCost(models.judge, 65000, judgeTokens);
+  const queuedReserve = (currentDecision: boolean): BudgetReserve => ({
+    calls: judgeBatches.length * 2 + (currentDecision ? 1 : 0),
+    usd: judgeBatches.length * judgeReserve.usd + (currentDecision ? decideCost : 0),
   });
-  const invokeJudge = async <T>(
-    phase: "VERIFY" | "DECIDE",
-    schema: () => z.ZodType<T>,
-    outputTokens: number,
-    preserve?: BudgetReserve,
-    followup = false,
-  ): Promise<T> => {
-    for (;;) {
-      try {
+  const splitForRetry = (batch: VerifiedCandidate[]) => {
+    const middle = Math.ceil(batch.length / 2);
+    judgeBatches.unshift(batch.slice(middle));
+    judgeBatches.unshift(batch.slice(0, middle));
+  };
+  try {
+    while (judgeBatches.length) {
+      const judged = judgeBatches.shift()!;
+      if (
+        bytes(
+          JSON.stringify({
+            untrustedCode: code,
+            unverifiedCandidates: judged.map(compact),
+          }),
+        ) > 24000
+      ) {
+        if (judged.length > 1) {
+          splitForRetry(judged);
+          continue;
+        }
+        incomplete("JUDGE_INPUT_LIMIT");
+        continue;
+      }
+      const judgeRecords: EvidenceRecord[] = [];
+      const judgeEnvelope = (phase: "VERIFY" | "DECIDE", followup = false) => ({
+        phase,
+        untrustedCode: code,
+        unverifiedCandidates: judged.map(compact),
+        attestedEvidence: judgeRecords,
+        validationPolicy: config.validation,
+        followup,
+        ...(phase === "DECIDE" ? { untrustedPullRequestContext: prContext } : {}),
+      });
+      const invokeJudge = <T>(
+        phase: "VERIFY" | "DECIDE",
+        schema: z.ZodType<T>,
+        outputTokens: number,
+        preserve: BudgetReserve,
+        followup = false,
+      ) => {
         const paths = judged.map((candidate) => candidate.hypothesis.path);
         const domains = judged.map((candidate) => candidate.originatingAgent);
-        return await invoke(
+        return invoke(
           models.judge,
           "judge",
           system(judgePhasePrompt(phase), "judge", paths, domains),
           judgeEnvelope(phase, followup),
-          schema(),
+          schema,
           outputTokens,
           preserve,
         );
-      } catch (error) {
-        const warning = inputLimitWarning(error);
-        if (!warning || judged.length <= 1) throw error;
-        dropLastJudged(warning);
-      }
-    }
-  };
-  try {
-    for (const candidate of judged)
-      judgeRecords.push(
-        ...(await evidence.surrounding(
-          candidate.hypothesis,
-          files.find((file) => file.path === candidate.hypothesis.path)!,
-          "judge",
-        )),
-      );
-    const planning = await invokeJudge("VERIFY", () => judgeInvestigationSchema, 1500, {
-      calls: 1,
-      usd: budget.maximumCost(models.judge, 65000, judgeTokens),
-      ms: Math.min(30000, Math.floor(budget.remainingMs() / 3)),
-    });
-    validateIds(
-      judged.map((candidate) => candidate.id),
-      planning.requests.map((item) => item.candidateId),
-    );
-    for (const item of planning.requests)
-      if (judged.some((candidate) => candidate.id === item.candidateId))
-        judgeRecords.push(
-          await evidence.capture(item.request, "judge", "investigation", item.candidateId),
-        );
-    const attestedJudgeSchema = () =>
-      judgeResponseSchema.superRefine((value, ctx) => {
-        value.decisions.forEach((item, index) => {
-          const candidate = judged.find((candidate) => candidate.id === item.candidateId);
-          if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
-            checkAttestation(
-              ctx,
-              ["decisions", index, "checks"],
-              item.checks,
+      };
+      try {
+        for (const candidate of judged)
+          judgeRecords.push(
+            ...(await evidence.surrounding(
               candidate.hypothesis,
-              judgeRecords,
+              files.find((file) => file.path === candidate.hypothesis.path)!,
               "judge",
-            );
+            )),
+          );
+        const planning = await invokeJudge("VERIFY", judgeInvestigationSchema, 1500, {
+          ...queuedReserve(true),
+          ms: Math.min(30000, Math.floor(budget.remainingMs() / 3)),
         });
-      });
-    let decision = await invokeJudge("DECIDE", attestedJudgeSchema, judgeTokens);
-    validateIds(
-      judged.map((candidate) => candidate.id),
-      decision.decisions.map((item) => item.candidateId),
-    );
-    const more = decision.decisions.filter((item) => item.verdict === "needs-more-context");
-    if (more.length) {
-      if (more.flatMap((item) => item.requests!).length > 4) incomplete("JUDGE_RETRIEVAL_LIMIT");
-      else {
-        for (const item of more)
-          for (const request of item.requests!)
-            judgeRecords.push(
-              await evidence.capture(request, "judge", "investigation", item.candidateId),
-            );
-        decision = await invokeJudge("DECIDE", attestedJudgeSchema, judgeTokens, undefined, true);
+        validateIds(
+          judged.map((candidate) => candidate.id),
+          planning.requests.map((item) => item.candidateId),
+        );
+        for (const item of planning.requests)
+          judgeRecords.push(
+            await evidence.capture(item.request, "judge", "investigation", item.candidateId),
+          );
+        const attestedJudgeSchema = judgeResponseSchema.superRefine((value, ctx) => {
+          value.decisions.forEach((item, index) => {
+            const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+            if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
+              checkAttestation(
+                ctx,
+                ["decisions", index, "checks"],
+                item.checks,
+                candidate.hypothesis,
+                judgeRecords,
+                "judge",
+              );
+          });
+        });
+        let decision = await invokeJudge(
+          "DECIDE",
+          attestedJudgeSchema,
+          judgeTokens,
+          queuedReserve(false),
+        );
         validateIds(
           judged.map((candidate) => candidate.id),
           decision.decisions.map((item) => item.candidateId),
         );
-      }
-    }
-    const suppressed = new Set<string>();
-    for (const item of decision.decisions) {
-      if (!judged.some((candidate) => candidate.id === item.candidateId)) continue;
-      if (item.verdict === "merge") {
-        const candidate = judged.find((candidate) => candidate.id === item.candidateId)!;
-        if (
-          !item.mergedWith?.length ||
-          item.mergedWith.some(
-            (id) =>
-              id === item.candidateId ||
-              !judged.some(
-                (other) =>
-                  other.id === id &&
-                  other.hypothesis.path === candidate.hypothesis.path &&
-                  Math.abs(other.hypothesis.line - candidate.hypothesis.line) <= 10,
-              ) ||
-              decision.decisions.find((other) => other.candidateId === id)?.verdict !== "reject",
-          )
-        )
-          throw new ProviderError("JUDGE_INVALID_MERGE");
-        item.mergedWith.forEach((id) => suppressed.add(id));
-      } else if (item.mergedWith?.length) throw new ProviderError("JUDGE_INVALID_MERGE");
-    }
-    const accepted: Finding[] = [];
-    for (const item of decision.decisions) {
-      if (item.verdict === "needs-more-context") {
-        incomplete("JUDGE_CONTEXT_UNRESOLVED");
-        continue;
-      }
-      if (item.verdict === "reject" || suppressed.has(item.candidateId)) continue;
-      const candidate = judged.find((candidate) => candidate.id === item.candidateId);
-      if (!candidate) continue;
-      try {
-        attestChecks(item.checks!, candidate.hypothesis, judgeRecords, "judge", files);
-        if (item.confidence! < config.review.minimumConfidence) continue;
-        const fix = item.suggestedFix ?? candidate.suggestedFix;
-        if (
-          (item.finalPriority === "must_fix" || item.finalPriority === "should_fix") &&
-          (!fix || item.suggestedFixSafe !== true)
-        )
-          throw new ProviderError("JUDGE_UNVERIFIED_FIX");
-        const description = `${item.checks!.actualBehavior.statement}\nTrigger: ${item.checks!.trigger.statement}\nWhy this is wrong: ${item.checks!.expectedBehavior.statement}\nImpact: ${item.checks!.impact.statement}\nPR causality: ${item.checks!.causality.statement}`;
-        const quotes = [
-          ...new Set(
-            Object.values(item.checks!).flatMap((claim) =>
-              claim.citations.map((citation) => citation.quote),
-            ),
-          ),
-        ];
-        const finding = findingSchema.parse({
-          id: candidate.id,
-          title: candidate.hypothesis.title,
-          description,
-          path: candidate.hypothesis.path,
-          line: candidate.hypothesis.line,
-          startLine: candidate.hypothesis.startLine,
-          severity: item.finalSeverity,
-          priority: item.finalPriority,
-          category: candidate.hypothesis.category,
-          confidence: item.confidence,
-          evidence: quotes.slice(0, 8),
-          originatingAgent: candidate.originatingAgent,
-          relatedSymbols: candidate.hypothesis.relatedSymbols,
-          ...(item.suggestedFixSafe === true && fix ? { suggestedFix: fix } : {}),
-        });
-        if (
-          finding.priority !== "must_fix" &&
-          severityOrder[finding.severity] > severityOrder[config.review.minimumSeverity]
-        )
-          continue;
-        const old =
-          options.previousFindings?.filter((previous) => sameFinding(previous, finding)) ?? [];
-        const baseline = judgeRecords.filter(
-          (record) =>
-            record.owner === "judge" &&
-            record.hypothesisId === candidate.id &&
-            record.purpose === "baseline" &&
-            record.result.status === "ok" &&
-            !record.result.truncated &&
-            record.result.fileExists !== false,
-        );
-        const anchors = item.checks!.anchor.citations.map((citation) => citation.quote);
-        const deletionAnchor =
-          reviewableLines(files.find((file) => file.path === finding.path)!).find(
-            (line) => line.line === finding.line,
-          )?.kind === "deletion-context";
-        if (
-          !deletionAnchor &&
-          old.some((previous) =>
-            anchors.some(
-              (quote) =>
-                previous.evidence.includes(quote) &&
-                baseline.some((record) => record.result.output.includes(quote)),
-            ),
-          )
-        )
-          continue;
-        if (!accepted.some((previous) => sameFinding(previous, finding))) accepted.push(finding);
+        const more = decision.decisions.filter((item) => item.verdict === "needs-more-context");
+        if (more.length) {
+          const requests = more.flatMap((item) =>
+            item.requests!.map((request) => ({ candidateId: item.candidateId, request })),
+          );
+          if (requests.length > judgeRetrievalRemaining) incomplete("JUDGE_RETRIEVAL_LIMIT");
+          else {
+            judgeRetrievalRemaining -= requests.length;
+            for (const item of requests)
+              judgeRecords.push(
+                await evidence.capture(item.request, "judge", "investigation", item.candidateId),
+              );
+            decision = await invokeJudge(
+              "DECIDE",
+              attestedJudgeSchema,
+              judgeTokens,
+              queuedReserve(false),
+              true,
+            );
+            validateIds(
+              judged.map((candidate) => candidate.id),
+              decision.decisions.map((item) => item.candidateId),
+            );
+          }
+        }
+        const suppressed = new Set<string>();
+        for (const item of decision.decisions) {
+          if (!judged.some((candidate) => candidate.id === item.candidateId)) continue;
+          if (item.verdict === "merge") {
+            const candidate = judged.find((candidate) => candidate.id === item.candidateId)!;
+            if (
+              !item.mergedWith?.length ||
+              item.mergedWith.some(
+                (id) =>
+                  id === item.candidateId ||
+                  !judged.some(
+                    (other) =>
+                      other.id === id &&
+                      other.hypothesis.path === candidate.hypothesis.path &&
+                      other.hypothesis.line === candidate.hypothesis.line,
+                  ) ||
+                  decision.decisions.find((other) => other.candidateId === id)?.verdict !==
+                    "reject",
+              )
+            )
+              throw new ProviderError("JUDGE_INVALID_MERGE");
+            item.mergedWith.forEach((id) => suppressed.add(id));
+          } else if (item.mergedWith?.length) throw new ProviderError("JUDGE_INVALID_MERGE");
+        }
+        for (const item of decision.decisions) {
+          if (item.verdict === "needs-more-context") {
+            incomplete("JUDGE_CONTEXT_UNRESOLVED");
+            continue;
+          }
+          if (item.verdict === "reject" || suppressed.has(item.candidateId)) continue;
+          const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+          if (!candidate) continue;
+          try {
+            attestChecks(item.checks!, candidate.hypothesis, judgeRecords, "judge", files);
+            if (item.confidence! < config.review.minimumConfidence) continue;
+            const fix = item.suggestedFix ?? candidate.suggestedFix;
+            if (
+              (item.finalPriority === "must_fix" || item.finalPriority === "should_fix") &&
+              (!fix || item.suggestedFixSafe !== true)
+            )
+              throw new ProviderError("JUDGE_UNVERIFIED_FIX");
+            const description = `${item.checks!.actualBehavior.statement}\nTrigger: ${item.checks!.trigger.statement}\nWhy this is wrong: ${item.checks!.expectedBehavior.statement}\nImpact: ${item.checks!.impact.statement}\nPR causality: ${item.checks!.causality.statement}`;
+            const quotes = [
+              ...new Set(
+                Object.values(item.checks!).flatMap((claim) =>
+                  claim.citations.map((citation) => citation.quote),
+                ),
+              ),
+            ];
+            const finding = findingSchema.parse({
+              id: candidate.id,
+              title: candidate.hypothesis.title,
+              description,
+              path: candidate.hypothesis.path,
+              line: candidate.hypothesis.line,
+              startLine: candidate.hypothesis.startLine,
+              severity: item.finalSeverity,
+              priority: item.finalPriority,
+              category: candidate.hypothesis.category,
+              confidence: item.confidence,
+              evidence: quotes.slice(0, 8),
+              originatingAgent: candidate.originatingAgent,
+              relatedSymbols: candidate.hypothesis.relatedSymbols,
+              ...(item.suggestedFixSafe === true && fix ? { suggestedFix: fix } : {}),
+            });
+            if (
+              finding.priority !== "must_fix" &&
+              severityOrder[finding.severity] > severityOrder[config.review.minimumSeverity]
+            )
+              continue;
+            const old =
+              options.previousFindings?.filter((previous) => sameFinding(previous, finding)) ?? [];
+            const baseline = judgeRecords.filter(
+              (record) =>
+                record.owner === "judge" &&
+                record.hypothesisId === candidate.id &&
+                record.purpose === "baseline" &&
+                record.result.status === "ok" &&
+                !record.result.truncated &&
+                record.result.fileExists !== false,
+            );
+            const anchors = item.checks!.anchor.citations.map((citation) => citation.quote);
+            const deletionAnchor =
+              reviewableLines(files.find((file) => file.path === finding.path)!).find(
+                (line) => line.line === finding.line,
+              )?.kind === "deletion-context";
+            if (
+              !deletionAnchor &&
+              old.some((previous) =>
+                anchors.some(
+                  (quote) =>
+                    previous.evidence.includes(quote) &&
+                    baseline.some((record) => record.result.output.includes(quote)),
+                ),
+              )
+            )
+              continue;
+            // Candidates were already deduplicated by exact behavior and anchor, and the
+            // judge explicitly merges exact duplicates. A fuzzy finding comparison here
+            // would collapse nearby but independently actionable regressions.
+            accepted.push(finding);
+          } catch (error) {
+            const code = safeError(error);
+            incomplete(code.startsWith("JUDGE_") ? code : `JUDGE_${code}`);
+          }
+        }
       } catch (error) {
-        const code = safeError(error);
+        const warning = inputLimitWarning(error);
+        if (warning && judged.length > 1) {
+          splitForRetry(judged);
+          continue;
+        }
+        const code = warning ?? safeError(error);
         incomplete(code.startsWith("JUDGE_") ? code : `JUDGE_${code}`);
       }
     }
-    findings = accepted.sort(compareFindings);
-  } catch (error) {
-    const code = safeError(error);
-    incomplete(code.startsWith("JUDGE_") ? code : `JUDGE_${code}`);
   } finally {
     if (evidence.hasUnresolvedDiscovery("judge")) incomplete("INVESTIGATION_CONTEXT_INCOMPLETE");
   }
+  findings = accepted.sort(compareFindings);
   return finish();
 }

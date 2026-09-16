@@ -1051,7 +1051,7 @@ describe("verified investigation protocol", () => {
     expect(result.warnings).toContain("SECURITY_MODEL_INVALID_JSON");
   });
 
-  it("drops oversized judge candidates and still publishes remaining findings", async () => {
+  it("splits oversized judge batches without dropping independent findings", async () => {
     const lines = [
       "export const authorized = true;",
       "export const session = true;",
@@ -1106,9 +1106,202 @@ describe("verified investigation protocol", () => {
       };
     });
     const result = await runReview(options);
-    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings).toHaveLength(4);
+    expect(result.findings.map((item) => item.line)).toEqual([1, 2, 3, 4]);
+    expect(result.coverageComplete).toBe(true);
+    expect(result.warnings.some((code) => /JUDGE_(MODEL_)?INPUT_LIMIT/.test(code))).toBe(false);
+  });
+
+  it("keeps nearby independently accepted findings instead of collapsing them", async () => {
+    const lines = ["export const authorized = true;", "export const session = true;"];
+    const second = {
+      ...hypothesis,
+      id: "local-2",
+      line: 2,
+      trigger: "An anonymous request invokes the protected route after session assignment.",
+      actualBehavior: "The changed session constant authorizes every caller.",
+    };
+    const options = fixture((request) => {
+      const selected = request.system.includes("Domain: security.") ? second : hypothesis;
+      return replayResponse(request, { hypothesis: selected, relatedPath });
+    });
+    options.config.agents = {
+      lightweight: false,
+      correctness: true,
+      security: true,
+      performance: false,
+      testing: false,
+      types: false,
+    };
+    options.files = [
+      {
+        ...file,
+        additions: 2,
+        deletions: 1,
+        patch:
+          "@@ -1,1 +1,2 @@\n-export const authorized = checkPermission(user);\n+" +
+          lines.join("\n+"),
+      },
+    ];
+    const original = options.tools.execute.getMockImplementation()!;
+    options.tools.execute.mockImplementation(async (request) => {
+      const result = await original(request);
+      if (request.tool === "gitShow") {
+        return {
+          ...result,
+          output:
+            "1: export const authorized = checkPermission(user);\n2: export const session = checkSession(user);",
+        };
+      }
+      if (request.tool === "readFile" && request.path === file.path) {
+        return {
+          ...result,
+          output: lines.map((text, index) => `${index + 1}: ${text}`).join("\n"),
+        };
+      }
+      return result;
+    });
+    const result = await runReview(options);
+    expect(result.findings).toHaveLength(2);
+    expect(
+      result.findings.map((item) => item.line ?? 0).toSorted((left, right) => left - right),
+    ).toEqual([1, 2]);
+    expect(result.coverageComplete).toBe(true);
+  });
+
+  it("rejects a judge merge of nearby findings on different changed lines", async () => {
+    const lines = ["export const authorized = true;", "export const session = true;"];
+    const second = {
+      ...hypothesis,
+      id: "local-2",
+      line: 2,
+      title: "Session flag is hardcoded to true",
+      trigger: "A caller reads the session flag after login.",
+      actualBehavior: "The changed constant marks every caller as having a session.",
+      expectedBehavior: "Only authenticated users may receive a session flag.",
+      impact: "Anonymous callers inherit a valid session.",
+      causality: "The increment replaces session validation with a true constant.",
+      disproofQuestion: "Does middleware establish a session before this assignment is used?",
+    };
+    const options = fixture((request) => {
+      const envelope = JSON.parse(request.user) as ReplayEnvelope;
+      if (request.model === "judge" && envelope.phase === "DECIDE") {
+        const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
+          decisions: Array<Record<string, unknown>>;
+        };
+        const lineById = new Map(
+          (envelope.unverifiedCandidates ?? []).map((candidate) => [
+            candidate.id,
+            candidate.hypothesis.line,
+          ]),
+        );
+        const keep = output.decisions.find((item) => lineById.get(String(item.candidateId)) === 1);
+        const drop = output.decisions.find((item) => lineById.get(String(item.candidateId)) === 2);
+        expect(keep).toBeDefined();
+        expect(drop).toBeDefined();
+        keep!.verdict = "merge";
+        keep!.mergedWith = [drop!.candidateId];
+        drop!.verdict = "reject";
+        drop!.reason = "Duplicate of the nearby authorization assignment.";
+        delete drop!.checks;
+        delete drop!.usefulness;
+        delete drop!.confidence;
+        delete drop!.finalSeverity;
+        delete drop!.finalPriority;
+        delete drop!.suggestedFix;
+        delete drop!.suggestedFixSafe;
+        return modelResponse(output);
+      }
+      const selected = request.system.includes("Domain: security.") ? second : hypothesis;
+      return replayResponse(request, { hypothesis: selected, relatedPath });
+    });
+    options.config.agents = {
+      lightweight: false,
+      correctness: true,
+      security: true,
+      performance: false,
+      testing: false,
+      types: false,
+    };
+    options.files = [
+      {
+        ...file,
+        additions: 2,
+        deletions: 1,
+        patch:
+          "@@ -1,1 +1,2 @@\n-export const authorized = checkPermission(user);\n+" +
+          lines.join("\n+"),
+      },
+    ];
+    const original = options.tools.execute.getMockImplementation()!;
+    options.tools.execute.mockImplementation(async (request) => {
+      const result = await original(request);
+      if (request.tool === "gitShow") {
+        return {
+          ...result,
+          output:
+            "1: export const authorized = checkPermission(user);\n2: export const session = checkSession(user);",
+        };
+      }
+      if (request.tool === "readFile" && request.path === file.path) {
+        return {
+          ...result,
+          output: lines.map((text, index) => `${index + 1}: ${text}`).join("\n"),
+        };
+      }
+      return result;
+    });
+    const result = await runReview(options);
+    expect(result.findings).toEqual([]);
     expect(result.coverageComplete).toBe(false);
-    expect(result.warnings.some((code) => /JUDGE_(MODEL_)?INPUT_LIMIT/.test(code))).toBe(true);
+    expect(result.warnings).toContain("JUDGE_INVALID_MERGE");
+  });
+
+  it("still merges duplicate reports that share the exact changed-line anchor", async () => {
+    const duplicate = {
+      ...hypothesis,
+      id: "local-2",
+      title: "Authorization is a constant true value",
+      trigger: "An unauthenticated caller hits the mutated authorization export.",
+      actualBehavior: "The assignment hardcodes authorization instead of checking permissions.",
+    };
+    const options = fixture((request) => {
+      const envelope = JSON.parse(request.user) as ReplayEnvelope;
+      if (request.model === "judge" && envelope.phase === "DECIDE") {
+        const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
+          decisions: Array<Record<string, unknown>>;
+        };
+        expect(output.decisions).toHaveLength(2);
+        const [keep, drop] = output.decisions;
+        keep!.verdict = "merge";
+        keep!.mergedWith = [drop!.candidateId];
+        drop!.verdict = "reject";
+        drop!.reason = "Exact duplicate of the same authorization assignment.";
+        delete drop!.checks;
+        delete drop!.usefulness;
+        delete drop!.confidence;
+        delete drop!.finalSeverity;
+        delete drop!.finalPriority;
+        delete drop!.suggestedFix;
+        delete drop!.suggestedFixSafe;
+        return modelResponse(output);
+      }
+      const selected = request.system.includes("Domain: security.") ? duplicate : hypothesis;
+      return replayResponse(request, { hypothesis: selected, relatedPath });
+    });
+    options.config.agents = {
+      lightweight: false,
+      correctness: true,
+      security: true,
+      performance: false,
+      testing: false,
+      types: false,
+    };
+    const result = await runReview(options);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.line).toBe(1);
+    expect(result.coverageComplete).toBe(true);
+    expect(result.warnings).not.toContain("JUDGE_INVALID_MERGE");
   });
 
   it("requires the judge's own evidence even if specialist evidence is valid", async () => {
@@ -1339,23 +1532,30 @@ describe("verified investigation protocol", () => {
       quote: "app.post('/protected', (request) => mutate(authorized));",
     };
     const claim = (statement: string, citations = [headCitation]) => ({ statement, citations });
+    const checks = {
+      trigger: claim(h.trigger, [callerCitation]),
+      actualBehavior: claim(h.actualBehavior),
+      expectedBehavior: claim(h.expectedBehavior, [baseCitation]),
+      impact: claim(h.impact),
+      causality: claim(h.causality, [headCitation, baseCitation]),
+      disproof: claim(h.disproofQuestion, [callerCitation]),
+      anchor: claim("This is the reviewed added authorization assignment."),
+    };
+    expect(() => attestChecks(checks, h, records.records, "correctness", [file])).not.toThrow();
     expect(() =>
       attestChecks(
         {
-          trigger: claim(h.trigger, [callerCitation]),
-          actualBehavior: claim(h.actualBehavior),
-          expectedBehavior: claim(h.expectedBehavior, [baseCitation]),
-          impact: claim(h.impact),
-          causality: claim(h.causality, [headCitation, baseCitation]),
-          disproof: claim(h.disproofQuestion, [callerCitation]),
-          anchor: claim("This is the reviewed added authorization assignment."),
+          ...checks,
+          actualBehavior: claim(h.actualBehavior, [
+            { evidenceId: head.id, quote: "export const result = authorized;" },
+          ]),
         },
         h,
         records.records,
         "correctness",
         [file],
       ),
-    ).not.toThrow();
+    ).toThrow(/MISSING_ACTUAL_BEHAVIOR_ANCHOR/);
   });
 
   it("preserves final judge priority/confidence and drops unsafe fixes", async () => {
@@ -1490,9 +1690,12 @@ describe("verified investigation protocol", () => {
     ] as const) {
       expect(specialistPrompt(agent)).toContain("ANALYZE -> VERIFY -> DECIDE");
       expect(specialistPrompt(agent)).toContain("Do not assign confidence, severity or priority");
+      expect(specialistPrompt(agent)).toContain("one independently triggerable behavior");
       expect(specialistPrompt(agent, "VERIFY")).toContain("disproof");
+      expect(specialistPrompt(agent, "VERIFY")).toContain("Reject a bundled hypothesis");
     }
     expect(judgePhasePrompt("DECIDE")).toContain("retain independently verified regressions");
+    expect(judgePhasePrompt("DECIDE")).toContain("same changed-line anchor");
     for (const heading of [
       "ROLE",
       "OBJECTIVE",

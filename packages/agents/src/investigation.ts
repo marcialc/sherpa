@@ -281,6 +281,17 @@ export function attestChecks(
     throw new ProviderError("INVALID_CHANGED_ANCHOR");
   const primary = anchors.find((line) => line.line === hypothesis.line)!;
   if (
+    !checks.actualBehavior.citations.some((citation) => {
+      const record = records.find((item) => item.id === citation.evidenceId)!;
+      return (
+        own(record, "head") &&
+        requestPath(record) === hypothesis.path &&
+        citation.quote.includes(primary.text.trim())
+      );
+    })
+  )
+    throw new ProviderError("MISSING_ACTUAL_BEHAVIOR_ANCHOR");
+  if (
     primary.kind === "deletion-context" &&
     !checks.causality.citations.some((citation) => {
       const record = records.find((item) => item.id === citation.evidenceId)!;
