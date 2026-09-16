@@ -142,7 +142,7 @@ Sherpa helps with review; it does not replace your tests or your judgment. GitHu
 
 If you host Sherpa for yourself, you pay both. The software is MIT-licensed; the services it uses can incur charges.
 
-The default limit is **$1 in estimated model usage per review**, with at most **18 model requests** and **10 minutes of analysis**. These are limits, not a quoted price per PR. They do not include hosting, provider billing adjustments, or Cloudflare fees. Your host configures model prices and the service ceilings.
+Reviews have no dollar cap by default. They allow at most **18 model requests** and **10 minutes of analysis**. Call and time limits prevent runaway runs; model usage is still billed by your configured provider.
 
 ## Customize your reviews
 
@@ -158,7 +158,8 @@ review:
     nits: 0
 
 budget:
-  maxUsdPerReview: 1
+  # Omit maxUsdPerReview to keep the default unlimited spend.
+  maxAgentCalls: 18
 ```
 
 This keeps inline feedback to five comments and hides optional nits. Verified **Must Fix** findings remain visible in the summary even when inline comments are limited.
