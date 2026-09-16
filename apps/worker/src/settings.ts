@@ -18,7 +18,11 @@ export function getSettings(env: RuntimeEnv) {
     },
     pricing: z.record(z.string(), priceSchema).parse(JSON.parse(env.MODEL_PRICING_JSON)),
     limits: {
-      maxUsd: z.coerce.number().positive().max(100).parse(env.MAX_REVIEW_COST_USD),
+      // "unlimited" removes the spend ceiling; call and time limits still apply.
+      maxUsd:
+        env.MAX_REVIEW_COST_USD.trim().toLowerCase() === "unlimited"
+          ? Infinity
+          : z.coerce.number().positive().parse(env.MAX_REVIEW_COST_USD),
       maxAgentCalls: z.coerce.number().int().min(2).max(100).parse(env.MAX_AGENT_CALLS),
       maxDurationMs: z.coerce
         .number()

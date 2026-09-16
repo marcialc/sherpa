@@ -83,7 +83,7 @@ export class ReviewBudget {
     private readonly now = Date.now,
   ) {
     if (
-      !Number.isFinite(limits.maxUsd) ||
+      (!Number.isFinite(limits.maxUsd) && limits.maxUsd !== Infinity) ||
       limits.maxUsd <= 0 ||
       !Number.isInteger(limits.maxCalls) ||
       limits.maxCalls < 1 ||
@@ -132,7 +132,10 @@ export class ReviewBudget {
     const usd = this.maximumCost(ref, inputBound, outputBound);
     if (this.attemptedCalls + 1 + preserve.calls > this.limits.maxCalls)
       throw new BudgetError("MODEL_CALL_LIMIT");
-    if (this.spentUsd + this.reservedUsd + usd + preserve.usd > this.limits.maxUsd + 1e-12)
+    if (
+      this.limits.maxUsd !== Infinity &&
+      this.spentUsd + this.reservedUsd + usd + preserve.usd > this.limits.maxUsd + 1e-12
+    )
       throw new BudgetError("MODEL_COST_LIMIT");
     this.reservedUsd += usd;
     this.attemptedCalls++;
