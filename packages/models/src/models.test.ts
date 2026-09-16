@@ -197,6 +197,17 @@ describe("shared budget reservations", () => {
     ).rejects.toThrow("MODEL_CALL_LIMIT");
     expect(provider.complete).toHaveBeenCalledTimes(1);
   });
+  it("allows unlimited dollar budgets while enforcing model calls", async () => {
+    const provider = { complete: vi.fn().mockResolvedValue(response()) };
+    const budget = new ReviewBudget(
+      { maxUsd: Infinity, maxCalls: 1, deadline: Date.now() + 1000 },
+      pricing,
+    );
+
+    await expect(budget.invoke({ ...args, provider })).resolves.toEqual({ ok: true });
+    expect(budget.cost().totalEstimatedUsd).toBeGreaterThan(0);
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
   it("counts and conservatively charges each rate-limit retry", async () => {
     const provider: ModelProvider = {
       maxRetries: 2,
