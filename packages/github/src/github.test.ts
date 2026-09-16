@@ -729,6 +729,31 @@ describe("V0 round trip and reliable publication", () => {
     expect(posted.body).toContain("Review coverage is incomplete.");
   });
 
+  it("lists confirmed findings and failed-step notes when coverage is incomplete", async () => {
+    const mocked = apiMock();
+    await new GitHubClient("token", mocked, identity).publishReview(job, {
+      ...result,
+      findings: [{ ...finding, priority: "should_fix" }],
+      coverageComplete: false,
+      outcome: "PASS_WITH_FINDINGS",
+      warnings: [
+        "INVESTIGATION_CONTEXT_INCOMPLETE",
+        "JUDGE_MODEL_INPUT_LIMIT",
+        "TYPES_MODEL_INPUT_LIMIT",
+      ],
+    });
+    const posted = JSON.parse(
+      String(mocked.mock.calls.find(([, init]) => init?.method === "POST")![1]?.body),
+    ) as { body: string; event: string };
+    expect(posted.event).toBe("COMMENT");
+    expect(posted.body).toContain("⚠️ Review Incomplete");
+    expect(posted.body).toContain("Confirmed findings below are still listed");
+    expect(posted.body).toContain(finding.title);
+    expect(posted.body).toContain("Some repository search or file context was truncated");
+    expect(posted.body).toContain("Some proposed findings exceeded the judge");
+    expect(posted.body).toContain("A reviewer ran out of context and was skipped");
+  });
+
   it("limits only inline comments while preserving accepted findings and outcome in the summary", async () => {
     for (const maxComments of [0, 1]) {
       const mocked = apiMock();

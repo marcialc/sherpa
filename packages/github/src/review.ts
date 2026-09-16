@@ -137,13 +137,20 @@ function reviewNote(code: string): string {
     NO_ENABLED_REVIEWERS: "No reviewers were enabled for this change.",
     CANDIDATE_LIMIT: "The analysis limit was reached before all proposed findings could be judged.",
     JUDGE_INPUT_LIMIT: "Some proposed findings exceeded the judge's context limit.",
+    JUDGE_MODEL_INPUT_LIMIT: "Some proposed findings exceeded the judge's context limit.",
     JUDGE_CONTEXT_UNRESOLVED:
       "The judge could not obtain enough context to resolve every proposed finding.",
     JUDGE_CONTEXT_INCOMPLETE: "Some context requested by the judge was unavailable or truncated.",
     SPECIALIST_CONTEXT_INCOMPLETE:
       "Some context or validation requested by a reviewer was unavailable or truncated.",
+    INVESTIGATION_CONTEXT_INCOMPLETE:
+      "Some repository search or file context was truncated or unavailable.",
   };
   if (notes[code]) return notes[code];
+  if (/_MODEL_INPUT_LIMIT$/.test(code) || /_INVESTIGATION_INPUT_LIMIT$/.test(code))
+    return "A reviewer ran out of context and was skipped; other reviewers continued.";
+  if (/_MODEL_INVALID_(?:JSON|SCHEMA)$/.test(code) || /_PROVIDER_INCOMPLETE_RESPONSE$/.test(code))
+    return "A reviewer returned unusable output and was skipped; other reviewers continued.";
   if (/^[A-Z_]+$/.test(code)) return `A review step did not complete (${code}).`;
   return code;
 }
@@ -197,6 +204,9 @@ export function formatSummary(
       .join("; ")}${blockers.length > 2 ? `; and ${blockers.length - 2} more below` : ""}.`;
   } else if (verdict === "APPROVED_WITH_COMMENTS")
     body += "\n\nSafe to merge; review the non-blocking improvements below.";
+  else if (result.findings.length)
+    body +=
+      "\n\nReview coverage is incomplete. Confirmed findings below are still listed; no approval was issued.";
   else
     body +=
       "\n\nReview could not be completed. No approval was issued; rerun the review before relying on it.";
@@ -246,7 +256,7 @@ export function formatSummary(
   }
   if (result.warnings.length) {
     // Operational diagnostics are separate from judge-accepted code Warnings and their counts.
-    const notes = [...new Set(result.warnings.map(reviewNote))].slice(0, 3);
+    const notes = [...new Set(result.warnings.map(reviewNote))].slice(0, 5);
     body += `\n\nReview notes: ${notes.map((note) => prose(note, 250)).join(" ")}`;
   }
   const origin = trustedSetupOrigin(setupOrigin);

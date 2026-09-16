@@ -1051,6 +1051,66 @@ describe("verified investigation protocol", () => {
     expect(result.warnings).toContain("SECURITY_MODEL_INVALID_JSON");
   });
 
+  it("drops oversized judge candidates and still publishes remaining findings", async () => {
+    const lines = [
+      "export const authorized = true;",
+      "export const session = true;",
+      "export const token = true;",
+      "export const cookie = true;",
+    ];
+    const hypotheses = lines.map((text, index) => ({
+      ...hypothesis,
+      id: `local-${index}`,
+      line: index + 1,
+      title: `${finding.title} ${index}`,
+      trigger: `${hypothesis.trigger} ${index}`,
+      actualBehavior: `${hypothesis.actualBehavior} ${index}`,
+    }));
+    const pad = (prefix: string) => {
+      const body = lines.map((text, index) => `${index + 1}: ${prefix}${text}`).join("\n");
+      return `${body}\n${"x".repeat(Math.max(0, 5900 - body.length))}`;
+    };
+    const options = fixture((request) => {
+      const domain = /Domain: (correctness|security|testing|types)\./.exec(request.system)?.[1];
+      const selected =
+        hypotheses[["correctness", "security", "testing", "types"].indexOf(domain ?? "")] ??
+        hypotheses[0]!;
+      return replayResponse(request, { hypothesis: selected, relatedPath });
+    });
+    options.config.agents = {
+      lightweight: false,
+      correctness: true,
+      security: true,
+      performance: false,
+      testing: true,
+      types: true,
+    };
+    options.files = [
+      {
+        ...file,
+        additions: 4,
+        deletions: 1,
+        patch:
+          "@@ -1,1 +1,4 @@\n-export const authorized = checkPermission(user);\n+" +
+          lines.join("\n+"),
+      },
+    ];
+    const original = options.tools.execute.getMockImplementation()!;
+    options.tools.execute.mockImplementation(async (request) => {
+      const result = await original(request);
+      return {
+        ...result,
+        output: pad(
+          request.tool === "gitShow" ? "export const authorized = checkPermission(user); // " : "",
+        ),
+      };
+    });
+    const result = await runReview(options);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.coverageComplete).toBe(false);
+    expect(result.warnings.some((code) => /JUDGE_(MODEL_)?INPUT_LIMIT/.test(code))).toBe(true);
+  });
+
   it("requires the judge's own evidence even if specialist evidence is valid", async () => {
     let foreign: { id: string; result: { output: string } };
     const options = singleReviewer(

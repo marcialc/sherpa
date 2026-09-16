@@ -790,9 +790,20 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     incomplete("JUDGE_INPUT_LIMIT");
   }
   if (!judged.length) return finish();
-  const judgePaths = judged.map((candidate) => candidate.hypothesis.path);
-  const judgeDomains = judged.map((candidate) => candidate.originatingAgent);
   const judgeRecords: EvidenceRecord[] = [];
+  const dropLastJudged = (code: string) => {
+    incomplete(code);
+    const dropped = judged.pop();
+    if (!dropped) return;
+    for (let index = judgeRecords.length - 1; index >= 0; index--)
+      if (judgeRecords[index]!.hypothesisId === dropped.id) judgeRecords.splice(index, 1);
+  };
+  const inputLimitWarning = (error: unknown) => {
+    const code = safeError(error);
+    if (code === "MODEL_INPUT_LIMIT") return "JUDGE_MODEL_INPUT_LIMIT";
+    if (code === "INVESTIGATION_INPUT_LIMIT") return "JUDGE_INPUT_LIMIT";
+    return undefined;
+  };
   const judgeEnvelope = (phase: "VERIFY" | "DECIDE", followup = false) => ({
     phase,
     untrustedCode: code,
@@ -802,6 +813,33 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     followup,
     ...(phase === "DECIDE" ? { untrustedPullRequestContext: prContext } : {}),
   });
+  const invokeJudge = async <T>(
+    phase: "VERIFY" | "DECIDE",
+    schema: () => z.ZodType<T>,
+    outputTokens: number,
+    preserve?: BudgetReserve,
+    followup = false,
+  ): Promise<T> => {
+    for (;;) {
+      try {
+        const paths = judged.map((candidate) => candidate.hypothesis.path);
+        const domains = judged.map((candidate) => candidate.originatingAgent);
+        return await invoke(
+          models.judge,
+          "judge",
+          system(judgePhasePrompt(phase), "judge", paths, domains),
+          judgeEnvelope(phase, followup),
+          schema(),
+          outputTokens,
+          preserve,
+        );
+      } catch (error) {
+        const warning = inputLimitWarning(error);
+        if (!warning || judged.length <= 1) throw error;
+        dropLastJudged(warning);
+      }
+    }
+  };
   try {
     for (const candidate of judged)
       judgeRecords.push(
@@ -811,78 +849,59 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           "judge",
         )),
       );
-    const planning = await invoke(
-      models.judge,
-      "judge",
-      system(judgePhasePrompt("VERIFY"), "judge", judgePaths, judgeDomains),
-      judgeEnvelope("VERIFY"),
-      judgeInvestigationSchema,
-      1500,
-      {
-        calls: 1,
-        usd: budget.maximumCost(models.judge, 65000, judgeTokens),
-        ms: Math.min(30000, Math.floor(budget.remainingMs() / 3)),
-      },
-    );
+    const planning = await invokeJudge("VERIFY", () => judgeInvestigationSchema, 1500, {
+      calls: 1,
+      usd: budget.maximumCost(models.judge, 65000, judgeTokens),
+      ms: Math.min(30000, Math.floor(budget.remainingMs() / 3)),
+    });
     validateIds(
       judged.map((candidate) => candidate.id),
       planning.requests.map((item) => item.candidateId),
     );
     for (const item of planning.requests)
-      judgeRecords.push(
-        await evidence.capture(item.request, "judge", "investigation", item.candidateId),
-      );
-    const decisionPrompt = system(judgePhasePrompt("DECIDE"), "judge", judgePaths, judgeDomains);
-    const attestedJudgeSchema = judgeResponseSchema.superRefine((value, ctx) => {
-      value.decisions.forEach((item, index) => {
-        const candidate = judged.find((candidate) => candidate.id === item.candidateId);
-        if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
-          checkAttestation(
-            ctx,
-            ["decisions", index, "checks"],
-            item.checks,
-            candidate.hypothesis,
-            judgeRecords,
-            "judge",
-          );
+      if (judged.some((candidate) => candidate.id === item.candidateId))
+        judgeRecords.push(
+          await evidence.capture(item.request, "judge", "investigation", item.candidateId),
+        );
+    const attestedJudgeSchema = () =>
+      judgeResponseSchema.superRefine((value, ctx) => {
+        value.decisions.forEach((item, index) => {
+          const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+          if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
+            checkAttestation(
+              ctx,
+              ["decisions", index, "checks"],
+              item.checks,
+              candidate.hypothesis,
+              judgeRecords,
+              "judge",
+            );
+        });
       });
-    });
-    let decision = await invoke(
-      models.judge,
-      "judge",
-      decisionPrompt,
-      judgeEnvelope("DECIDE"),
-      attestedJudgeSchema,
-      judgeTokens,
-    );
+    let decision = await invokeJudge("DECIDE", attestedJudgeSchema, judgeTokens);
     validateIds(
       judged.map((candidate) => candidate.id),
       decision.decisions.map((item) => item.candidateId),
     );
     const more = decision.decisions.filter((item) => item.verdict === "needs-more-context");
     if (more.length) {
-      if (more.flatMap((item) => item.requests!).length > 4)
-        throw new ProviderError("JUDGE_RETRIEVAL_LIMIT");
-      for (const item of more)
-        for (const request of item.requests!)
-          judgeRecords.push(
-            await evidence.capture(request, "judge", "investigation", item.candidateId),
-          );
-      decision = await invoke(
-        models.judge,
-        "judge",
-        decisionPrompt,
-        judgeEnvelope("DECIDE", true),
-        attestedJudgeSchema,
-        judgeTokens,
-      );
-      validateIds(
-        judged.map((candidate) => candidate.id),
-        decision.decisions.map((item) => item.candidateId),
-      );
+      if (more.flatMap((item) => item.requests!).length > 4) incomplete("JUDGE_RETRIEVAL_LIMIT");
+      else {
+        for (const item of more)
+          for (const request of item.requests!)
+            judgeRecords.push(
+              await evidence.capture(request, "judge", "investigation", item.candidateId),
+            );
+        decision = await invokeJudge("DECIDE", attestedJudgeSchema, judgeTokens, undefined, true);
+        validateIds(
+          judged.map((candidate) => candidate.id),
+          decision.decisions.map((item) => item.candidateId),
+        );
+      }
     }
     const suppressed = new Set<string>();
     for (const item of decision.decisions) {
+      if (!judged.some((candidate) => candidate.id === item.candidateId)) continue;
       if (item.verdict === "merge") {
         const candidate = judged.find((candidate) => candidate.id === item.candidateId)!;
         if (
@@ -910,7 +929,8 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         continue;
       }
       if (item.verdict === "reject" || suppressed.has(item.candidateId)) continue;
-      const candidate = judged.find((candidate) => candidate.id === item.candidateId)!;
+      const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+      if (!candidate) continue;
       try {
         attestChecks(item.checks!, candidate.hypothesis, judgeRecords, "judge", files);
         if (item.confidence! < config.review.minimumConfidence) continue;
@@ -984,7 +1004,6 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     }
     findings = accepted.sort(compareFindings);
   } catch (error) {
-    findings = [];
     const code = safeError(error);
     incomplete(code.startsWith("JUDGE_") ? code : `JUDGE_${code}`);
   } finally {

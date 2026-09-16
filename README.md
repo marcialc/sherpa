@@ -129,7 +129,7 @@ Findings are grouped from most to least urgent:
 
 </details>
 
-An incomplete review is labeled **Review Incomplete** and never approves the PR. If Sherpa already confirmed a blocker, it still requests changes and explains the coverage gap.
+An incomplete review is labeled **Review Incomplete** and never approves the PR. Failed reviewer steps are listed as notes; remaining confirmed findings are still published. If Sherpa already confirmed a blocker, it still requests changes and explains the coverage gap.
 
 Sherpa helps with review; it does not replace your tests or your judgment. GitHub branch protection remains under your control.
 
