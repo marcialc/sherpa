@@ -69,7 +69,7 @@
     "MODEL_PRICING_JSON": "{\"cloudflare/openai/gpt-4.1-mini\":{\"inputUsdPerMillion\":0.4,\"outputUsdPerMillion\":1.6,\"cachedInputUsdPerMillion\":0.1},\"cloudflare/openai/gpt-4.1\":{\"inputUsdPerMillion\":2,\"outputUsdPerMillion\":8,\"cachedInputUsdPerMillion\":0.5}}",
     "ALLOWED_MODELS_JSON": "[]",
     "MAX_REVIEW_COST_USD": "unlimited",
-    "MAX_AGENT_CALLS": "18",
+    "MAX_AGENT_CALLS": "unlimited",
     "MAX_REVIEW_DURATION_MS": "600000",
     "ALLOW_REPOSITORY_VALIDATION": "false",
   },

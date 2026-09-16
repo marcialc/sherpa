@@ -85,7 +85,7 @@ export class ReviewBudget {
     if (
       (!Number.isFinite(limits.maxUsd) && limits.maxUsd !== Infinity) ||
       limits.maxUsd <= 0 ||
-      !Number.isInteger(limits.maxCalls) ||
+      (!Number.isInteger(limits.maxCalls) && limits.maxCalls !== Infinity) ||
       limits.maxCalls < 1 ||
       !Number.isFinite(limits.deadline)
     )
@@ -130,7 +130,10 @@ export class ReviewBudget {
     if (this.remainingMs() <= (preserve.ms ?? 0)) throw new BudgetError("MODEL_TIME_RESERVE");
     if (this.closed) throw new BudgetError("BUDGET_ACCOUNTING_UNCERTAIN");
     const usd = this.maximumCost(ref, inputBound, outputBound);
-    if (this.attemptedCalls + 1 + preserve.calls > this.limits.maxCalls)
+    if (
+      this.limits.maxCalls !== Infinity &&
+      this.attemptedCalls + 1 + preserve.calls > this.limits.maxCalls
+    )
       throw new BudgetError("MODEL_CALL_LIMIT");
     if (
       this.limits.maxUsd !== Infinity &&

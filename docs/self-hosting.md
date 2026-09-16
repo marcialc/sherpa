@@ -138,7 +138,7 @@ The price key is **`cloudflare/` followed by the model ID**. For example, the mo
 | Variable                      | Default     | Purpose                                                      |
 | ----------------------------- | ----------- | ------------------------------------------------------------ |
 | `MAX_REVIEW_COST_USD`         | `unlimited` | Estimated model usage ceiling per review, or `unlimited`.    |
-| `MAX_AGENT_CALLS`             | `18`        | Maximum model requests, including retries.                   |
+| `MAX_AGENT_CALLS`             | `unlimited` | Model request ceiling, or `unlimited`.                       |
 | `MAX_REVIEW_DURATION_MS`      | `600000`    | Analysis deadline: 10 minutes.                               |
 | `ALLOWED_MODELS_JSON`         | `[]`        | Models repositories may choose as overrides.                 |
 | `ALLOW_REPOSITORY_VALIDATION` | `false`     | Whether repositories may opt in to executing project checks. |

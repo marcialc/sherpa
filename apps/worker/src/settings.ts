@@ -23,7 +23,10 @@ export function getSettings(env: RuntimeEnv) {
         env.MAX_REVIEW_COST_USD.trim().toLowerCase() === "unlimited"
           ? Infinity
           : z.coerce.number().positive().parse(env.MAX_REVIEW_COST_USD),
-      maxAgentCalls: z.coerce.number().int().min(2).max(100).parse(env.MAX_AGENT_CALLS),
+      maxAgentCalls:
+        env.MAX_AGENT_CALLS.trim().toLowerCase() === "unlimited"
+          ? Infinity
+          : z.coerce.number().int().min(2).parse(env.MAX_AGENT_CALLS),
       maxDurationMs: z.coerce
         .number()
         .int()

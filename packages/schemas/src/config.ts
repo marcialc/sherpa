@@ -117,10 +117,14 @@ export const repoConfigSchema = z
       .object({
         // The service controls spend; by default reviews are uncapped by dollars.
         maxUsdPerReview: z.number().positive().default(Number.MAX_VALUE),
-        maxAgentCalls: z.number().int().min(1).max(100).default(18),
+        maxAgentCalls: z.number().int().min(1).default(Number.MAX_SAFE_INTEGER),
         maxDurationMs: z.number().int().min(1000).max(1800000).default(600000),
       })
-      .default({ maxUsdPerReview: Number.MAX_VALUE, maxAgentCalls: 18, maxDurationMs: 600000 }),
+      .default({
+        maxUsdPerReview: Number.MAX_VALUE,
+        maxAgentCalls: Number.MAX_SAFE_INTEGER,
+        maxDurationMs: 600000,
+      }),
     validation: z
       .object({
         enabled: z.boolean().default(false),
