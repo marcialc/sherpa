@@ -8,7 +8,7 @@ const accountHelp =
   "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/";
 const billingHelp = "https://developers.cloudflare.com/ai-gateway/features/unified-billing/";
 const arrow = '<span aria-hidden="true">↗</span>';
-const mark = `<svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="m3 25 10-18 6 11 4-7 7 14H3Z" fill="currentColor"/><path d="m10 13 3-6 4 7-4-2-3 1Z" fill="#fff"/></svg>`;
+const logo = (size: number) => `<img src="/logo.png" alt="" width="${size}" height="${size}">`;
 export type GatewayFormValues = { accountId: string; gatewayId: string };
 export type GatewayFormErrors = Partial<Record<"accountId" | "gatewayId" | "apiToken", string>>;
 
@@ -55,7 +55,7 @@ export function installationList(
   `
     : `
     <div class="intro"><p class="eyebrow">Step 1 of 3</p><h1>Let’s connect your repositories.</h1><p>You’re signed in. Now give Sherpa access to the code you’d like reviewed.</p></div>
-    <section class="card empty-state"><div class="illustration" aria-hidden="true">${mark}</div><h2>Install Sherpa to get started</h2><p>No GitHub accounts with Sherpa installed are available to this sign-in yet.</p>
+    <section class="card empty-state"><div class="illustration" aria-hidden="true">${logo(65)}</div><h2>Install Sherpa to get started</h2><p>No GitHub accounts with Sherpa installed are available to this sign-in yet.</p>
       <ol class="instructions"><li>Open Sherpa’s installation page on GitHub.</li><li>Choose your account or organization, select your repositories, and click <strong>Install</strong>.</li><li>Return to this tab and refresh your accounts.</li></ol>
       ${!installUrl ? '<p class="notice">Ask the person hosting Sherpa for the app’s installation link. If you already installed it, check its repository access in GitHub app settings.</p>' : ""}
       <div class="actions">${install}<a class="button secondary" href="/setup">I’ve installed it · Refresh</a></div>
@@ -146,7 +146,7 @@ export function html(
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "content-security-policy":
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
     "x-frame-options": "DENY",
@@ -157,7 +157,7 @@ export function html(
       ? `<section class="card error-page">${body}<p>Return to setup to try again. If the problem continues, contact the person hosting Sherpa.</p><a href="/setup" class="button primary">Return to setup <span aria-hidden="true">→</span></a></section>`
       : body;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${context.step === 1 ? "Choose your GitHub account" : context.step === 2 ? "Set up AI billing" : context.step === 3 ? "Start your first review" : "Setup"} · Sherpa</title><style>${styles}</style></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><a class="brand" href="/setup" aria-label="Sherpa setup"><span class="brand-mark">${mark}</span>Sherpa<span class="brand-divider"></span><span class="brand-caption">Setup</span></a>${context.login ? `<div class="signed-in"><span class="online-dot" aria-hidden="true"></span><span>Signed in as <strong>${escapeHtml(context.login)}</strong></span></div>` : ""}</header><main id="main">${context.step ? progress(context.step) : ""}${content}</main><footer class="site-footer"><span>Sherpa · Thoughtful reviews, right in GitHub.</span><span>Powered by your Cloudflare AI Gateway</span></footer></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${context.step === 1 ? "Choose your GitHub account" : context.step === 2 ? "Set up AI billing" : context.step === 3 ? "Start your first review" : "Setup"} · Sherpa</title><link rel="icon" href="/logo.png" type="image/png"><style>${styles}</style></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><a class="brand" href="/setup" aria-label="Sherpa setup">${logo(37)}Sherpa<span class="brand-divider"></span><span class="brand-caption">Setup</span></a>${context.login ? `<div class="signed-in"><span class="online-dot" aria-hidden="true"></span><span>Signed in as <strong>${escapeHtml(context.login)}</strong></span></div>` : ""}</header><main id="main">${context.step ? progress(context.step) : ""}${content}</main><footer class="site-footer"><span>Sherpa · Thoughtful reviews, right in GitHub.</span><span>Powered by your Cloudflare AI Gateway</span></footer></body></html>`,
     { status, headers },
   );
 }
