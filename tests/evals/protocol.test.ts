@@ -211,8 +211,12 @@ describe("paired adversarial protocol replay", () => {
               ...trace,
               forgeDisproof: !fixture.expected.length,
             });
-            const parsed = JSON.parse(response.text) as { decisions?: { verdict: string }[] };
-            for (const decision of parsed.decisions ?? []) {
+            // The current pipeline keys decisions by candidate id; the baseline above is the
+            // frozen array protocol and is deliberately left alone.
+            const parsed = JSON.parse(response.text) as {
+              decisions?: Record<string, { verdict: string }>;
+            };
+            for (const decision of Object.values(parsed.decisions ?? {})) {
               judgedCandidates++;
               if (decision.verdict === "reject") judgeRejections++;
             }

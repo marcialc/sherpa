@@ -44,7 +44,7 @@ import {
   strictToolRequestSchema,
   verificationResponseSchema,
   judgeInvestigationSchema,
-  judgeResponseSchema,
+  judgeResponseSchemaFor,
   attestChecks,
   EvidenceAttestationError,
   reconcileIds,
@@ -58,7 +58,7 @@ export {
   analysisResponseSchema,
   verificationResponseSchema,
   judgeInvestigationSchema,
-  judgeResponseSchema,
+  judgeResponseSchemaFor,
 } from "./investigation";
 export type {
   Hypothesis,
@@ -868,20 +868,27 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           judgeRecords.push(
             await evidence.capture(item.request, "judge", "investigation", item.candidateId),
           );
-        const attestedJudgeSchema = judgeResponseSchema.superRefine((value, ctx) => {
-          value.decisions.forEach((item, index) => {
-            const candidate = judged.find((candidate) => candidate.id === item.candidateId);
-            if ((item.verdict === "accept" || item.verdict === "merge") && item.checks && candidate)
-              checkAttestation(
-                ctx,
-                ["decisions", index, "checks"],
-                item.checks,
-                candidate.hypothesis,
-                judgeRecords,
-                "judge",
-              );
-          });
-        });
+        const attestedJudgeSchema = judgeResponseSchemaFor(candidateIds).superRefine(
+          (value, ctx) => {
+            value.decisions.forEach((item) => {
+              const candidate = judged.find((candidate) => candidate.id === item.candidateId);
+              if (
+                (item.verdict === "accept" || item.verdict === "merge") &&
+                item.checks &&
+                candidate
+              )
+                checkAttestation(
+                  ctx,
+                  // The wire key is the candidate id, so corrections name the candidate.
+                  ["decisions", item.candidateId, "checks"],
+                  item.checks,
+                  candidate.hypothesis,
+                  judgeRecords,
+                  "judge",
+                );
+            });
+          },
+        );
         const decision = await invokeJudge(
           "DECIDE",
           attestedJudgeSchema,

@@ -117,50 +117,68 @@ export const judgeInvestigationSchema = z
       .max(6),
   })
   .strict();
-export const judgeResponseSchema = z
+const judgeDecisionSchema = z
   .object({
-    phase: z.literal("DECIDE"),
-    decisions: z
-      .array(
-        z
-          .object({
-            candidateId: id,
-            verdict: z.enum(["accept", "reject", "merge", "needs-more-context"]),
-            reason: decisionReason,
-            checks: evidenceChecksSchema.optional(),
-            usefulness: statement.optional(),
-            confidence: z.number().min(0).max(1).optional(),
-            finalSeverity: severitySchema.optional(),
-            finalPriority: findingPrioritySchema.optional(),
-            suggestedFix: z.string().trim().min(8).max(1000).optional(),
-            suggestedFixSafe: z.boolean().optional(),
-            mergedWith: z.array(id).max(5).optional(),
-            requests: z.array(strictToolRequestSchema).min(1).max(2).optional(),
-          })
-          .strict()
-          .superRefine((value, context) => {
-            if (
-              (value.verdict === "accept" || value.verdict === "merge") &&
-              (!value.checks ||
-                !value.usefulness ||
-                value.confidence === undefined ||
-                !value.finalSeverity ||
-                !value.finalPriority)
-            )
-              context.addIssue({
-                code: "custom",
-                message:
-                  "Acceptance requires independent attested checks, usefulness and final classification",
-              });
-            if (value.verdict === "needs-more-context" && !value.requests?.length)
-              context.addIssue({ code: "custom", message: "Context requests are required" });
-            if (value.verdict !== "needs-more-context" && value.requests)
-              context.addIssue({ code: "custom", message: "Unexpected context requests" });
-          }),
-      )
-      .max(6),
+    verdict: z.enum(["accept", "reject", "merge", "needs-more-context"]),
+    reason: decisionReason,
+    checks: evidenceChecksSchema.optional(),
+    usefulness: statement.optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    finalSeverity: severitySchema.optional(),
+    finalPriority: findingPrioritySchema.optional(),
+    suggestedFix: z.string().trim().min(8).max(1000).optional(),
+    suggestedFixSafe: z.boolean().optional(),
+    mergedWith: z.array(id).max(5).optional(),
+    requests: z.array(strictToolRequestSchema).min(1).max(2).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      (value.verdict === "accept" || value.verdict === "merge") &&
+      (!value.checks ||
+        !value.usefulness ||
+        value.confidence === undefined ||
+        !value.finalSeverity ||
+        !value.finalPriority)
+    )
+      context.addIssue({
+        code: "custom",
+        message:
+          "Acceptance requires independent attested checks, usefulness and final classification",
+      });
+    if (value.verdict === "needs-more-context" && !value.requests?.length)
+      context.addIssue({ code: "custom", message: "Context requests are required" });
+    if (value.verdict !== "needs-more-context" && value.requests)
+      context.addIssue({ code: "custom", message: "Unexpected context requests" });
+  });
+export type JudgeDecision = z.infer<typeof judgeDecisionSchema> & { candidateId: string };
+/**
+ * The wire shape keys decisions by candidate id, so a strict JSON schema makes "exactly one
+ * verdict per candidate" structural: every id is required and no other key is accepted. The
+ * decoded value keeps the flat `decisions` array the pipeline consumes, with the key restored
+ * as `candidateId`.
+ */
+export function judgeResponseSchemaFor(
+  candidateIds: string[],
+): z.ZodType<{ phase: "DECIDE"; decisions: JudgeDecision[] }> {
+  return z
+    .object({
+      phase: z.literal("DECIDE"),
+      decisions: z
+        .object(
+          Object.fromEntries(candidateIds.map((candidateId) => [candidateId, judgeDecisionSchema])),
+        )
+        .strict(),
+    })
+    .strict()
+    .transform(({ phase, decisions }) => ({
+      phase,
+      decisions: Object.entries(decisions).map(([candidateId, decision]) => ({
+        candidateId,
+        ...decision,
+      })),
+    }));
+}
 
 export type EvidenceRecord = {
   id: string;

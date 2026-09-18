@@ -6,7 +6,7 @@ import {
   analysisResponseSchema,
   analysisContextSchema,
   judgeInvestigationSchema,
-  judgeResponseSchema,
+  judgeResponseSchemaFor,
   strictToolRequestSchema,
   verificationResponseSchema,
 } from "./investigation";
@@ -126,7 +126,7 @@ describe("model response schema instructions", () => {
     analysisResponseSchema,
     verificationResponseSchema,
     judgeInvestigationSchema,
-    judgeResponseSchema,
+    judgeResponseSchemaFor(["correctness-0"]),
   ])(
     "converts every review phase with bounded instructions and resolvable references",
     (schema) => {
@@ -288,7 +288,7 @@ describe("model response schema instructions", () => {
       "\n",
     );
     const native = constrainNativeEvidence(
-      generated(judgeResponseSchema),
+      generated(judgeResponseSchemaFor(["correctness-0"])),
       [
         { id: "head", output, hypothesisId: "correctness-0" },
         { id: "base", output, hypothesisId: "correctness-0" },
@@ -306,7 +306,7 @@ describe("model response schema instructions", () => {
 
   it("bounds judge schema growth while retaining candidate and citation choices", () => {
     const native = constrainNativeEvidence(
-      generated(judgeResponseSchema),
+      generated(judgeResponseSchemaFor(["testing-0", "types-0"])),
       [
         { id: "head", output: "70: return changed;", hypothesisId: "testing-0" },
         {
@@ -324,11 +324,14 @@ describe("model response schema instructions", () => {
       ["investigation", "other-investigation"],
     );
     const root = native.schema as JsonSchema;
-    const variants = resolve(root, root.properties!.decisions!.items!).anyOf!;
-    expect(variants).toHaveLength(2);
-    const decision = variants[0]!;
-    expect(Object.keys(decision.properties!)[0]).toBe("reason");
-    expect(decision.properties!.candidateId!.const).toBe("testing-0");
+    // The candidate id is the key, so each candidate's decision is scoped without an anyOf
+    // cross-product and no candidateId field survives on the wire.
+    const keyed = root.properties!.decisions!.properties!;
+    expect(Object.keys(keyed)).toEqual(["testing-0", "types-0"]);
+    expect(root.properties!.decisions!.required).toEqual(["testing-0", "types-0"]);
+    expect(root.properties!.decisions!.additionalProperties).toBe(false);
+    const decision = resolve(root, keyed["testing-0"]!);
+    expect(decision.properties!.candidateId).toBeUndefined();
     expect(resolve(root, decision.properties!.verdict!).enum).toEqual([
       "accept",
       "reject",
@@ -347,19 +350,40 @@ describe("model response schema instructions", () => {
         (citation) => citation.properties!.evidenceId!.enum,
       ),
     ).toEqual([["head"], ["investigation"]]);
-    const normalized = structuredOutput(native.schema).normalize({
-      phase: "DECIDE",
-      decisions: [
-        {
-          candidateId: "testing-0",
-          verdict: "reject",
-          reason: "The existing test already accepts the new behavior.",
-          checks: null,
-          requests: null,
-          finalPriority: null,
-        },
-      ],
+    const decide = (decisions: Record<string, unknown>) =>
+      structuredOutput(native.schema).normalize({ phase: "DECIDE", decisions });
+    const rejection = (reason: string) => ({
+      verdict: "reject",
+      reason,
+      checks: null,
+      requests: null,
+      finalPriority: null,
     });
-    expect(judgeResponseSchema.safeParse(normalized).success).toBe(true);
+    const schema = judgeResponseSchemaFor(["testing-0", "types-0"]);
+    const both = schema.safeParse(
+      decide({
+        "testing-0": rejection("The existing test already accepts the new behavior."),
+        "types-0": rejection("The narrowed type is still assignable at every caller."),
+      }),
+    );
+    expect(both.success).toBe(true);
+    // The key is restored as candidateId for the pipeline.
+    expect(both.data!.decisions.map((decision) => decision.candidateId)).toEqual([
+      "testing-0",
+      "types-0",
+    ]);
+    // A candidate the judge skipped, and one it invented, are now schema violations.
+    expect(
+      schema.safeParse(decide({ "testing-0": rejection("Only one candidate answered.") })).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse(
+        decide({
+          "testing-0": rejection("The existing test already accepts the new behavior."),
+          "types-0": rejection("The narrowed type is still assignable at every caller."),
+          "ghost-9": rejection("A verdict for an identifier the executor never issued."),
+        }),
+      ).success,
+    ).toBe(false);
   });
 });

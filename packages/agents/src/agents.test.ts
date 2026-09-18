@@ -86,7 +86,8 @@ import {
 } from "../../../tests/fixtures/reviewer";
 import {
   analysisResponseSchema,
-  judgeResponseSchema,
+  judgeResponseSchemaFor,
+  reconcileIds,
   attestChecks,
   type Hypothesis,
 } from "./investigation";
@@ -166,9 +167,9 @@ function editDecision(
   edit: (value: Record<string, unknown>) => void,
 ): ModelResponse {
   const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
-    decisions: Array<Record<string, unknown>>;
+    decisions: Record<string, Record<string, unknown>>;
   };
-  output.decisions.forEach(edit);
+  Object.values(output.decisions).forEach(edit);
   return modelResponse(output);
 }
 
@@ -299,11 +300,11 @@ describe("repository index review integration", () => {
           const response = replayResponse(original, { hypothesis, relatedPath });
           const output = JSON.parse(response.text) as {
             assessments?: { checks: { disproof: { citations: unknown[] } } }[];
-            decisions?: { checks: { disproof: { citations: unknown[] } } }[];
+            decisions?: Record<string, { checks: { disproof: { citations: unknown[] } } }>;
           };
           const forged =
             owner === "judge" && envelope.phase === "DECIDE"
-              ? output.decisions
+              ? Object.values(output.decisions ?? {})
               : owner === "specialist" && envelope.untrustedHypotheses
                 ? output.assessments
                 : undefined;
@@ -972,7 +973,8 @@ describe("verified investigation protocol", () => {
                 ]),
               );
             } else {
-              const item = stage === "specialist" ? output.assessments[0] : output.decisions[0];
+              const item =
+                stage === "specialist" ? output.assessments[0] : Object.values(output.decisions)[0];
               item.checks.anchor.citations[0].quote = "export const authorized=true;";
             }
           }
@@ -1187,20 +1189,22 @@ describe("verified investigation protocol", () => {
       const envelope = JSON.parse(request.user) as ReplayEnvelope;
       if (request.model === "judge" && envelope.phase === "DECIDE") {
         const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
-          decisions: Array<Record<string, unknown>>;
+          decisions: Record<string, Record<string, unknown>>;
         };
-        const lineById = new Map(
+        const idByLine = new Map(
           (envelope.unverifiedCandidates ?? []).map((candidate) => [
-            candidate.id,
             candidate.hypothesis.line,
+            candidate.id,
           ]),
         );
-        const keep = output.decisions.find((item) => lineById.get(String(item.candidateId)) === 1);
-        const drop = output.decisions.find((item) => lineById.get(String(item.candidateId)) === 2);
+        const keepId = idByLine.get(1)!;
+        const dropId = idByLine.get(2)!;
+        const keep = output.decisions[keepId];
+        const drop = output.decisions[dropId];
         expect(keep).toBeDefined();
         expect(drop).toBeDefined();
         keep!.verdict = "merge";
-        keep!.mergedWith = [drop!.candidateId];
+        keep!.mergedWith = [dropId];
         drop!.verdict = "reject";
         drop!.reason = "Duplicate of the nearby authorization assignment.";
         delete drop!.checks;
@@ -1269,21 +1273,24 @@ describe("verified investigation protocol", () => {
       const envelope = JSON.parse(request.user) as ReplayEnvelope;
       if (request.model === "judge" && envelope.phase === "DECIDE") {
         const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
-          decisions: Array<Record<string, unknown>>;
+          decisions: Record<string, Record<string, unknown>>;
         };
-        expect(output.decisions).toHaveLength(2);
-        const [keep, drop] = output.decisions;
-        keep!.verdict = "merge";
-        keep!.mergedWith = [drop!.candidateId];
-        drop!.verdict = "reject";
-        drop!.reason = "Exact duplicate of the same authorization assignment.";
-        delete drop!.checks;
-        delete drop!.usefulness;
-        delete drop!.confidence;
-        delete drop!.finalSeverity;
-        delete drop!.finalPriority;
-        delete drop!.suggestedFix;
-        delete drop!.suggestedFixSafe;
+        const ids = Object.keys(output.decisions);
+        expect(ids).toHaveLength(2);
+        const [keepId, dropId] = ids as [string, string];
+        const keep = output.decisions[keepId]!;
+        const drop = output.decisions[dropId]!;
+        keep.verdict = "merge";
+        keep.mergedWith = [dropId];
+        drop.verdict = "reject";
+        drop.reason = "Exact duplicate of the same authorization assignment.";
+        delete drop.checks;
+        delete drop.usefulness;
+        delete drop.confidence;
+        delete drop.finalSeverity;
+        delete drop.finalPriority;
+        delete drop.suggestedFix;
+        delete drop.suggestedFixSafe;
         return modelResponse(output);
       }
       const selected = request.system.includes("Domain: security.") ? duplicate : hypothesis;
@@ -1342,7 +1349,13 @@ describe("verified investigation protocol", () => {
     expect(result.warnings).toContain("JUDGE_MODEL_INVALID_SCHEMA");
   });
 
-  it("drops an unknown judge candidateId without discarding the rest of the batch", async () => {
+  it.each([
+    ["omits a candidate", () => ({})],
+    [
+      "invents a candidate id",
+      (decision: unknown) => ({ "candidate-that-was-never-proposed": decision }),
+    ],
+  ])("rejects a judge decision map that %s", async (_label, rekey) => {
     const options = singleReviewer(
       fixture((input) => {
         const raw = JSON.parse(input.user);
@@ -1350,47 +1363,41 @@ describe("verified investigation protocol", () => {
         if (request.model !== "judge" || JSON.parse(request.user).phase !== "DECIDE")
           return replayResponse(request, { hypothesis, relatedPath });
         const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
-          decisions: Array<Record<string, unknown>>;
+          decisions: Record<string, unknown>;
         };
-        output.decisions.push({
-          candidateId: "candidate-that-was-never-proposed",
-          verdict: "reject",
-          reason: "A verdict for an identifier the executor never issued.",
-        });
-        return modelResponse(output);
+        const [, decision] = Object.entries(output.decisions)[0]!;
+        return modelResponse({ ...output, decisions: rekey(decision) });
       }),
     );
     const result = await runReview(options);
-    expect(result.findings).toHaveLength(1);
-    expect(result.coverageComplete).toBe(true);
-    expect(result.warnings).toEqual([]);
-  });
-
-  it("reports an unanswered judge candidate as a coverage gap instead of an approval", async () => {
-    const options = singleReviewer(
-      fixture((input) => {
-        const raw = JSON.parse(input.user);
-        const request = raw.originalTask ? { ...input, user: raw.originalTask } : input;
-        if (request.model !== "judge" || JSON.parse(request.user).phase !== "DECIDE")
-          return replayResponse(request, { hypothesis, relatedPath });
-        const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
-          decisions: Array<Record<string, unknown>>;
-        };
-        output.decisions = [
-          {
-            candidateId: "candidate-that-was-never-proposed",
-            verdict: "reject",
-            reason: "A verdict for an identifier the executor never issued.",
-          },
-        ];
-        return modelResponse(output);
-      }),
-    );
-    const result = await runReview(options);
+    // The keyed schema makes this a structural violation, not a verdict the pipeline must sift.
     expect(result.findings).toEqual([]);
     expect(result.coverageComplete).toBe(false);
     expect(result.outcome).toBe("REVIEW_FAILED");
-    expect(result.warnings).toContain("JUDGE_UNDECIDED_CANDIDATES");
+    expect(result.warnings).toContain("JUDGE_MODEL_INVALID_SCHEMA");
+  });
+
+  it("still reconciles a decision set when a model is not schema-constrained", () => {
+    const expected = ["correctness-0", "security-1"];
+    expect(
+      reconcileIds(expected, [{ candidateId: "security-1" }], (item) => item.candidateId),
+    ).toEqual({ answered: [{ candidateId: "security-1" }], missing: ["correctness-0"] });
+    // Duplicates and unknown ids are dropped rather than discarding the batch.
+    expect(
+      reconcileIds(
+        expected,
+        [
+          { candidateId: "correctness-0" },
+          { candidateId: "correctness-0" },
+          { candidateId: "ghost-9" },
+          { candidateId: "security-1" },
+        ],
+        (item) => item.candidateId,
+      ),
+    ).toEqual({
+      answered: [{ candidateId: "correctness-0" }, { candidateId: "security-1" }],
+      missing: [],
+    });
   });
 
   it("fails closed on boolean-only acceptance without factual causal checks", async () => {
@@ -1758,6 +1765,8 @@ describe("verified investigation protocol", () => {
       expect(specialistPrompt("correctness")).toContain(heading);
       expect(judgePhasePrompt("DECIDE")).toContain(heading);
     }
-    expect(judgeResponseSchema.safeParse({ phase: "DECIDE", decisions: [] }).success).toBe(true);
+    expect(judgeResponseSchemaFor([]).safeParse({ phase: "DECIDE", decisions: {} }).success).toBe(
+      true,
+    );
   });
 });

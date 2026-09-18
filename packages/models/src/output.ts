@@ -43,6 +43,9 @@ const fields = new Set(
     " ",
   ),
 );
+// Candidate and hypothesis ids are executor-assigned as `<agent>-<index>`, never model text, so
+// they are safe to log and let a correction name the candidate it got wrong.
+const candidateKey = /^[a-z]{1,20}-\d{1,3}$/;
 const rules: Record<string, string> = {
   EVIDENCE_ID_NOT_FOUND: "EVIDENCE_ID_NOT_FOUND",
   EVIDENCE_WRONG_HYPOTHESIS: "EVIDENCE_WRONG_HYPOTHESIS",
@@ -85,7 +88,7 @@ export function schemaDiagnostic(error: z.ZodError, value?: unknown): OutputDiag
           .map((key) =>
             typeof key === "number" && Number.isSafeInteger(key) && key >= 0 && key < 10000
               ? String(key)
-              : typeof key === "string" && fields.has(key)
+              : typeof key === "string" && (fields.has(key) || candidateKey.test(key))
                 ? key
                 : "*",
           )
@@ -111,7 +114,9 @@ export function schemaDiagnostic(error: z.ZodError, value?: unknown): OutputDiag
       ...(issue.code === "unrecognized_keys"
         ? {
             unknownKeyCount: issue.keys.length,
-            unrecognizedKeys: issue.keys.slice(0, 8).map((key) => (fields.has(key) ? key : "*")),
+            unrecognizedKeys: issue.keys
+              .slice(0, 8)
+              .map((key) => (fields.has(key) || candidateKey.test(key) ? key : "*")),
           }
         : {}),
     };

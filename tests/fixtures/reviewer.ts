@@ -123,19 +123,24 @@ export function replayResponse(
     });
   return modelResponse({
     phase: "DECIDE",
-    decisions: (envelope.unverifiedCandidates ?? []).map((candidate) => ({
-      candidateId: candidate.id,
-      verdict: "accept",
-      reason:
-        "Independent repository reads establish the failure and rule out the proposed mitigation.",
-      checks: checksFor({ ...options.hypothesis, ...candidate.hypothesis }, records, "judge"),
-      usefulness:
-        "An engineer should restore the broken contract before users encounter the demonstrated failure.",
-      confidence: 0.98,
-      finalSeverity: "high",
-      finalPriority: options.finalPriority ?? "must_fix",
-      suggestedFixSafe: true,
-      suggestedFix: "Restore the previous guarded behavior while preserving the caller contract.",
-    })),
+    decisions: Object.fromEntries(
+      (envelope.unverifiedCandidates ?? []).map((candidate) => [
+        candidate.id,
+        {
+          verdict: "accept",
+          reason:
+            "Independent repository reads establish the failure and rule out the proposed mitigation.",
+          checks: checksFor({ ...options.hypothesis, ...candidate.hypothesis }, records, "judge"),
+          usefulness:
+            "An engineer should restore the broken contract before users encounter the demonstrated failure.",
+          confidence: 0.98,
+          finalSeverity: "high",
+          finalPriority: options.finalPriority ?? "must_fix",
+          suggestedFixSafe: true,
+          suggestedFix:
+            "Restore the previous guarded behavior while preserving the caller contract.",
+        },
+      ]),
+    ),
   });
 }
