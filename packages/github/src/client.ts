@@ -1,6 +1,7 @@
 import {
   findingSchema,
   compareFindings,
+  completedVerdict,
   repositoryPathSchema,
   reviewJobSchema,
   shaSchema,
@@ -52,6 +53,61 @@ const reviewSchema = z.object({
 });
 const MAX_FILE_PAGES = 3;
 const MAX_REVIEW_PAGES = 10;
+const pullCommentSchema = z.object({
+  body: z.string().max(100000),
+  user: z.object({ login: z.string().max(150), type: z.string().max(50) }).nullable(),
+  commit_id: shaSchema.optional(),
+});
+const rerunIncompleteNote =
+  "Re-run did not complete. The previous Request changes review still applies.";
+type ListedReview = z.infer<typeof reviewSchema>;
+
+function fingerprintsFrom(body: string | null): string[] {
+  return [
+    ...new Set(
+      Array.from(
+        body?.matchAll(/^<!-- sherpa:finding:([a-f0-9]{64}) -->$/gm) ?? [],
+        (match) => match[1]!,
+      ),
+    ),
+  ];
+}
+
+function hasSherpaReviewMarker(body: string | null, marker?: string): boolean {
+  const lines = body?.split("\n") ?? [];
+  if (marker) return lines.includes(marker);
+  return lines.some((line) => /^<!-- sherpa:review:[a-f0-9]{64} -->$/.test(line));
+}
+
+function submittedState(
+  event: "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
+): "APPROVED" | "COMMENTED" | "CHANGES_REQUESTED" {
+  if (event === "APPROVE") return "APPROVED";
+  if (event === "REQUEST_CHANGES") return "CHANGES_REQUESTED";
+  return "COMMENTED";
+}
+
+/** A failed or incomplete re-run must not drop a Request changes review. */
+function keepExistingReview(
+  previous: ListedReview,
+  result: ReviewResult,
+  event: "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
+): boolean {
+  if (previous.state === submittedState(event)) return true;
+  return previous.state === "CHANGES_REQUESTED" && completedVerdict(result) === null;
+}
+
+function reuseBlockingReviewBody(previousBody: string | null, job: ReviewJob): string | null {
+  if (!previousBody || !hasSherpaReviewMarker(previousBody)) return null;
+  const remainder = previousBody
+    .split("\n")
+    .filter((line) => !/^<!-- sherpa:review:[a-f0-9]{64} -->$/.test(line))
+    .join("\n")
+    .trim();
+  if (!remainder) return null;
+  const combined = `${rerunIncompleteNote}\n\n${remainder}\n${reviewMarker(job)}`;
+  return new TextEncoder().encode(combined).byteLength <= 60000 ? combined : null;
+}
 
 export class GitHubClient {
   private readonly api: GitHubApi;
@@ -195,10 +251,24 @@ export class GitHubClient {
     }
   }
 
-  async findReview(job: ReviewJob): Promise<{ id: number; postedFingerprints: string[] } | null> {
+  private ownsReview(review: ListedReview, job: ReviewJob, botLogin: string): boolean {
+    return (
+      review.state !== "PENDING" &&
+      review.user?.type === "Bot" &&
+      review.user.login === botLogin &&
+      review.commit_id === job.headSha
+    );
+  }
+
+  private async findReviews(job: ReviewJob): Promise<{
+    published: { id: number; postedFingerprints: string[] } | null;
+    updatable: ListedReview | null;
+  }> {
     if (!this.identity || !/^[a-zA-Z0-9-]+\[bot\]$/.test(this.identity.botLogin))
       throw new GitHubError("GITHUB_APP_IDENTITY_REQUIRED");
+    const botLogin = this.identity.botLogin;
     const marker = reviewMarker(job);
+    let updatable: ListedReview | null = null;
     for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
       const response = await this.api.request(
         `${this.path(job)}/reviews?per_page=100&page=${page}`,
@@ -207,27 +277,94 @@ export class GitHubClient {
       const parsed = z.array(reviewSchema).max(100).safeParse(response?.data);
       if (!parsed.success) throw new GitHubError("INVALID_GITHUB_REVIEWS");
       for (const review of parsed.data) {
+        if (!this.ownsReview(review, job, botLogin)) continue;
+        if (hasSherpaReviewMarker(review.body, marker))
+          return {
+            published: { id: review.id, postedFingerprints: fingerprintsFrom(review.body) },
+            updatable: null,
+          };
         if (
-          review.state !== "PENDING" &&
-          review.user?.type === "Bot" &&
-          review.user.login === this.identity.botLogin &&
-          review.commit_id === job.headSha &&
-          review.body?.split("\n").includes(marker)
-        ) {
-          const postedFingerprints = [
-            ...new Set(
-              Array.from(
-                review.body.matchAll(/^<!-- sherpa:finding:([a-f0-9]{64}) -->$/gm),
-                (match) => match[1]!,
-              ),
-            ),
-          ];
-          return { id: review.id, postedFingerprints };
-        }
+          (review.state === "APPROVED" ||
+            review.state === "CHANGES_REQUESTED" ||
+            review.state === "COMMENTED") &&
+          hasSherpaReviewMarker(review.body)
+        )
+          updatable = review;
       }
-      if (!response?.hasNext && parsed.data.length < 100) return null;
+      if (!response?.hasNext && parsed.data.length < 100) return { published: null, updatable };
     }
     throw new GitHubError("GITHUB_RECONCILIATION_LIMIT");
+  }
+
+  async findReview(job: ReviewJob): Promise<{ id: number; postedFingerprints: string[] } | null> {
+    return (await this.findReviews(job)).published;
+  }
+
+  private async updateReview(job: ReviewJob, id: number, body: string): Promise<{ id: number }> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new GitHubError("INVALID_GITHUB_REVIEW_ID");
+    const response = await this.api.request(`${this.path(job)}/reviews/${id}`, {
+      method: "PUT",
+      body: { body },
+      maxBytes: 262144,
+    });
+    const parsed = z.object({ id: z.number().int().positive() }).safeParse(response?.data);
+    if (!parsed.success || parsed.data.id !== id)
+      throw new GitHubError("INVALID_GITHUB_PUBLISHED_REVIEW", undefined, true);
+    return { id: parsed.data.id };
+  }
+
+  private async dismissReview(job: ReviewJob, id: number): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new GitHubError("INVALID_GITHUB_REVIEW_ID");
+    await this.api.request(`${this.path(job)}/reviews/${id}/dismissals`, {
+      method: "PUT",
+      body: { message: "Superseded by a later Sherpa review.", event: "DISMISS" },
+      maxBytes: 262144,
+    });
+  }
+
+  private async ownInlineFingerprints(job: ReviewJob, botLogin: string): Promise<Set<string>> {
+    const fingerprints = new Set<string>();
+    for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
+      const response = await this.api.request(
+        `${this.path(job)}/comments?per_page=100&page=${page}`,
+        {
+          maxBytes: 4194304,
+        },
+      );
+      const parsed = z.array(pullCommentSchema).max(100).safeParse(response?.data);
+      if (!parsed.success) throw new GitHubError("INVALID_GITHUB_REVIEW_COMMENTS");
+      for (const comment of parsed.data) {
+        if (comment.user?.type !== "Bot" || comment.user.login !== botLogin) continue;
+        if (comment.commit_id !== job.headSha) continue;
+        for (const fingerprint of fingerprintsFrom(comment.body)) fingerprints.add(fingerprint);
+      }
+      if (!response?.hasNext && parsed.data.length < 100) return fingerprints;
+    }
+    throw new GitHubError("GITHUB_RECONCILIATION_LIMIT");
+  }
+
+  private async postInlineComments(job: ReviewJob, comments: ReviewComment[]): Promise<void> {
+    for (const comment of comments) {
+      try {
+        await this.api.request(`${this.path(job)}/comments`, {
+          method: "POST",
+          body: {
+            commit_id: job.headSha,
+            path: comment.path,
+            body: comment.body,
+            line: comment.line,
+            side: comment.side,
+            ...(comment.start_line
+              ? { start_line: comment.start_line, start_side: comment.start_side }
+              : {}),
+          },
+          maxBytes: 65536,
+        });
+      } catch (error) {
+        if (!(error instanceof GitHubError)) throw error;
+        return;
+      }
+    }
   }
 
   async publishReview(
@@ -252,9 +389,8 @@ export class GitHubClient {
       context.baseSha !== job.baseSha
     )
       throw new GitHubError("STALE_PULL_REQUEST");
-    const prior = await this.findReview(job);
-    if (prior) return prior;
-    const comments: ReviewComment[] = [];
+    const existing = await this.findReviews(job);
+    if (existing.published) return existing.published;
     const maxComments = z
       .number()
       .int()
@@ -276,38 +412,96 @@ export class GitHubClient {
         options.findingLimits,
       ),
     );
+    const mappable: Array<{ fingerprint: string; comment: ReviewComment }> = [];
     for (const { finding, fingerprint } of unique) {
       if (!selected.has(finding)) continue;
       summaries.push({ finding, fingerprint });
-      const body = `${formatFinding(finding)}\n\n${findingMarker(fingerprint)}`;
-      const comment = mapFindingToComment(finding, context.files, body);
-      if (comment && comments.length < maxComments) comments.push(comment);
+      const comment = mapFindingToComment(
+        finding,
+        context.files,
+        `${formatFinding(finding)}\n\n${findingMarker(fingerprint)}`,
+      );
+      if (comment) mappable.push({ fingerprint, comment });
     }
-    const postedFingerprints = summaries.map(({ fingerprint }) => fingerprint);
+    let postedFingerprints = summaries.map(({ fingerprint }) => fingerprint);
     const acceptedResult = { ...result, findings: unique.map(({ finding }) => finding) };
-    const body = formatSummary(
+    let body = formatSummary(
       job,
       acceptedResult,
       summaries,
       postedFingerprints,
       options.setupOrigin,
     );
+    const event = reviewEvent(acceptedResult);
+    const previous = existing.updatable;
+    const reusePrevious = previous !== null && keepExistingReview(previous, acceptedResult, event);
+    let preservedBlockers = false;
+    if (
+      previous &&
+      reusePrevious &&
+      previous.state === "CHANGES_REQUESTED" &&
+      completedVerdict(acceptedResult) === null
+    ) {
+      const reused = reuseBlockingReviewBody(previous.body, job);
+      if (reused) {
+        body = reused;
+        postedFingerprints = fingerprintsFrom(reused);
+        preservedBlockers = true;
+      }
+    }
+    let alreadyInlined = new Set<string>();
+    if (previous && !preservedBlockers) {
+      const identity = this.identity;
+      if (!identity) throw new GitHubError("GITHUB_APP_IDENTITY_REQUIRED");
+      try {
+        alreadyInlined = await this.ownInlineFingerprints(job, identity.botLogin);
+      } catch (error) {
+        if (!(error instanceof GitHubError)) throw error;
+        alreadyInlined = new Set(mappable.map((entry) => entry.fingerprint));
+      }
+    }
+    const comments = preservedBlockers
+      ? []
+      : mappable
+          .filter((entry) => !alreadyInlined.has(entry.fingerprint))
+          .slice(0, maxComments)
+          .map((entry) => entry.comment);
     // Refresh immediately before the single non-idempotent request. GitHub provides no conditional POST.
     const fresh = await this.metadata(job);
     if (fresh.state !== "open" || fresh.head.sha !== job.headSha || fresh.base.sha !== job.baseSha)
       throw new GitHubError("STALE_PULL_REQUEST");
+    if (reusePrevious && previous) {
+      const updated = await this.updateReview(job, previous.id, body);
+      await this.postInlineComments(job, comments);
+      return { id: updated.id, postedFingerprints };
+    }
     const response = await this.api.request(`${this.path(job)}/reviews`, {
       method: "POST",
       body: {
         commit_id: job.headSha,
         body,
-        event: reviewEvent(acceptedResult),
+        event,
         comments,
       },
       maxBytes: 262144,
     });
     const parsed = z.object({ id: z.number().int().positive() }).safeParse(response?.data);
     if (!parsed.success) throw new GitHubError("INVALID_GITHUB_PUBLISHED_REVIEW", undefined, true);
+    if (previous)
+      try {
+        await this.dismissReview(job, previous.id);
+      } catch (error) {
+        if (!(error instanceof GitHubError)) throw error;
+        try {
+          await this.updateReview(
+            job,
+            parsed.data.id,
+            `${body}\n\nA previous Sherpa review on this commit could not be dismissed.`,
+          );
+        } catch (updateError) {
+          if (!(updateError instanceof GitHubError)) throw updateError;
+        }
+      }
     return { id: parsed.data.id, postedFingerprints };
   }
 }

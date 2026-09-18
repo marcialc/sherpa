@@ -87,7 +87,7 @@ One saved gateway covers **all repositories in that GitHub App installation**. Y
 
 Open a small pull request that changes code, with **Draft turned off**. Sherpa will post its review on the pull request.
 
-Read the summary, check any inline comments, and push your fixes. Sherpa reviews the new changes using the last completed review as its starting point when possible.
+Read the summary, check any inline comments, and push your fixes. Sherpa reviews the new changes using the last completed review as its starting point when possible. Re-running Sherpa on the same commit updates that summary in place. If a completed re-run changes the merge decision, Sherpa posts one replacement review and then dismisses the previous one. A failed or incomplete re-run does not clear a Request changes review.
 
 **By default, draft PRs and ordinary documentation-only changes are skipped.** If you turn a draft into a ready PR, push a new commit or reopen it to trigger a review.
 
@@ -113,19 +113,25 @@ Findings are grouped from most to least urgent:
 <details>
 <summary><strong>See an example review</strong></summary>
 
-> **🤖 AI Review**
+> ## 🤖 AI Review
 >
 > ### ❌ Not Approved
 >
-> **1 Must Fix**
+> **🔴 1 Must Fix**
 >
-> **Session deletion is missing an ownership check**
+> Resolve the blocker before merging:
 >
-> `src/auth/session.ts:87`
+> - Session deletion is missing an ownership check
 >
-> A signed-in user can delete another user's session by supplying its ID.
+> ---
 >
-> **Fix:** Verify that the session belongs to the current user before deleting it.
+> ### 🔴 Must Fix
+>
+> 1. **Session deletion is missing an ownership check** · `src/auth/session.ts:87`
+>
+>    A signed-in user can delete another user's session by supplying its ID.
+>
+>    > **Fix:** Verify that the session belongs to the current user before deleting it.
 
 </details>
 

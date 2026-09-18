@@ -82,6 +82,10 @@ function prose(value: string, maxBytes: number): string {
   return utf8Prefix(safe, Math.max(0, maxBytes - 3)).replace(/\\$/, "") + "…";
 }
 
+function categoryLabel(category: Finding["category"]): string {
+  return category === "types" ? "Types/API" : category[0]!.toUpperCase() + category.slice(1);
+}
+
 function location(finding: Finding): string {
   const path = `${safeMarkdown(finding.path)}${finding.line ? `:${finding.line}` : ""}`;
   if (!path.includes("`")) return `\`${path}\``;
@@ -89,14 +93,27 @@ function location(finding: Finding): string {
   return `<code>${path.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code>`;
 }
 
+function suggestedFix(value: string, maxBytes: number, indent = ""): string {
+  return `\n\n${indent}> **Fix:** ${prose(value, maxBytes)}`;
+}
+
+function findingCounts(findings: Finding[]): string {
+  const counts = orderedPriorities
+    .map((priority) => {
+      const count = findings.filter((finding) => finding.priority === priority).length;
+      const label =
+        priorities[priority].label +
+        (count !== 1 && (priority === "warning" || priority === "nit") ? "s" : "");
+      return count ? `${priorities[priority].icon} ${count} ${label}` : null;
+    })
+    .filter((count) => count !== null);
+  return counts.length ? `**${counts.join(" · ")}**` : "";
+}
+
 export function formatFinding(finding: Finding): string {
   const priority = priorities[finding.priority];
-  const category =
-    finding.category === "types"
-      ? "Types/API"
-      : finding.category[0]!.toUpperCase() + finding.category.slice(1);
-  let body = `${priority.icon} **${priority.label} · ${category}**\n\n**${prose(finding.title, 500)}**\n\n${prose(finding.description, 1200)}`;
-  if (finding.suggestedFix) body += `\n\n**Fix:** ${prose(finding.suggestedFix, 650)}`;
+  let body = `**${priority.icon} ${priority.label}** · ${categoryLabel(finding.category)}\n\n**${prose(finding.title, 500)}**\n\n${prose(finding.description, 1200)}`;
+  if (finding.suggestedFix) body += suggestedFix(finding.suggestedFix, 650);
   return body;
 }
 
@@ -183,25 +200,16 @@ export function formatSummary(
     NOT_APPROVED: "❌ Not Approved",
   };
   let body = `## 🤖 AI Review\n\n### ${verdict ? titles[verdict] : "⚠️ Review Incomplete"}`;
-  const counts = orderedPriorities
-    .map((priority) => {
-      const count = result.findings.filter((finding) => finding.priority === priority).length;
-      const label =
-        priorities[priority].label +
-        (count !== 1 && (priority === "warning" || priority === "nit") ? "s" : "");
-      return count ? `${count} ${label}` : null;
-    })
-    .filter((count) => count !== null);
-  if (counts.length) body += `\n\n**${counts.join(" · ")}**`;
+  const counts = findingCounts(result.findings);
+  if (counts) body += `\n\n${counts}`;
   if (verdict === "APPROVED") body += "\n\nNo blocking or meaningful issues found.";
   else if (verdict === "NOT_APPROVED") {
     const blockers = [...result.findings]
       .sort(compareFindings)
       .filter((finding) => finding.priority === "must_fix");
-    body += `\n\nResolve ${blockers.length === 1 ? "the blocker" : "the blockers"} before merging: ${blockers
-      .slice(0, 2)
-      .map((finding) => prose(finding.title, 180))
-      .join("; ")}${blockers.length > 2 ? `; and ${blockers.length - 2} more below` : ""}.`;
+    const preview = blockers.slice(0, 2).map((finding) => `- ${prose(finding.title, 180)}`);
+    if (blockers.length > 2) preview.push(`- and ${blockers.length - 2} more below`);
+    body += `\n\nResolve ${blockers.length === 1 ? "the blocker" : "the blockers"} before merging:\n\n${preview.join("\n")}`;
   } else if (verdict === "APPROVED_WITH_COMMENTS")
     body += "\n\nSafe to merge; review the non-blocking improvements below.";
   else if (result.findings.length)
@@ -222,19 +230,24 @@ export function formatSummary(
       (54000 - new TextEncoder().encode(manifest).byteLength) / Math.max(1, entries.length),
     ),
   );
+  if (entries.length) body += "\n\n---";
   for (const priority of orderedPriorities) {
     const group = entries.filter(({ finding }) => finding.priority === priority);
     if (!group.length) continue;
     body += `\n\n### ${priorities[priority].icon} ${priorities[priority].group}`;
     for (const [index, { finding }] of group.entries()) {
       const indent = " ".repeat(String(index + 1).length + 2);
-      const heading = `${index + 1}. **${prose(finding.title, 350)}**\n\n${indent}${location(finding)}`;
+      const heading = `${index + 1}. **${prose(finding.title, 350)}** · ${location(finding)}`;
       const remaining = entryBudget - new TextEncoder().encode(heading).byteLength - 50;
       if (remaining < 120) throw new Error("REVIEW_SUMMARY_TOO_LARGE");
       const descriptionBudget = finding.suggestedFix ? Math.floor(remaining * 0.65) : remaining;
       body += `\n\n${heading}\n\n${indent}${prose(finding.description, Math.min(750, descriptionBudget))}`;
       if (finding.suggestedFix)
-        body += `\n\n${indent}**Fix:** ${prose(finding.suggestedFix, Math.min(450, remaining - descriptionBudget))}`;
+        body += suggestedFix(
+          finding.suggestedFix,
+          Math.min(450, remaining - descriptionBudget),
+          indent,
+        );
     }
   }
   const omitted = result.findings.length - entries.length;
@@ -252,17 +265,17 @@ export function formatSummary(
         ),
       ),
     ];
-    if (areas.length) body += `\n\n**Reviewed:**\n\n${areas.map((area) => `* ${area}`).join("\n")}`;
+    if (areas.length) body += `\n\n**Reviewed:**\n\n${areas.map((area) => `- ${area}`).join("\n")}`;
   }
   if (result.warnings.length) {
     // Operational diagnostics are separate from judge-accepted code Warnings and their counts.
     const notes = [...new Set(result.warnings.map(reviewNote))].slice(0, 5);
-    body += `\n\nReview notes: ${notes.map((note) => prose(note, 250)).join(" ")}`;
+    body += `\n\n### Review notes\n\n${notes.map((note) => `- ${prose(note, 250)}`).join("\n")}`;
   }
   const origin = trustedSetupOrigin(setupOrigin);
   if (result.warnings.includes("BILLING_NOT_CONFIGURED") && origin)
-    body += `\n\nConfigure billing at ${origin}/setup`;
-  body += `\n\nReviewed commit: \`${job.headSha}\`.`;
+    body += `\n\nConfigure billing at the [setup page](${origin}/setup).`;
+  body += `\n\n*Reviewed commit \`${job.headSha}\`.*`;
   // Keep a compact manifest in the review body, including fingerprints of inline findings.
   body += manifest;
   if (new TextEncoder().encode(body).byteLength > 60000)

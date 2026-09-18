@@ -58,11 +58,46 @@ function setup(
   };
   const ledger = new Ledger(store);
   const posts: Record<string, unknown>[] = [];
-  const reviews: unknown[] = [];
+  const updates: Record<string, unknown>[] = [];
+  const pullComments: {
+    body: unknown;
+    user: { login: string; type: string };
+    commit_id: string;
+  }[] = [];
+  const reviews: {
+    id: number;
+    body: unknown;
+    commit_id: string;
+    user: { login: string; type: string };
+    state: string;
+  }[] = [];
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );
+    if (url.pathname.endsWith("/dismissals") && init?.method === "PUT")
+      return Response.json({ id: 44, state: "DISMISSED" });
+    const existingReview = url.pathname.match(/\/reviews\/(\d+)$/);
+    if (existingReview && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      updates.push(body);
+      const id = Number(existingReview[1]);
+      const current = reviews.find((review) => review.id === id);
+      if (current) current.body = body.body;
+      return Response.json({ id });
+    }
+    if (url.pathname.endsWith("/comments")) {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        pullComments.push({
+          body: body.body,
+          user: { login: identity.botLogin, type: "Bot" },
+          commit_id: typeof body.commit_id === "string" ? body.commit_id : fixtureJob.headSha,
+        });
+        return Response.json({ id: 1 });
+      }
+      return Response.json(pullComments);
+    }
     if (url.pathname.endsWith("/reviews")) {
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -70,10 +105,23 @@ function setup(
         reviews.push({
           id: 44,
           body: body.body,
-          commit_id: fixtureJob.headSha,
+          commit_id: typeof body.commit_id === "string" ? body.commit_id : fixtureJob.headSha,
           user: { login: identity.botLogin, type: "Bot" },
-          state: "COMMENTED",
+          state:
+            body.event === "REQUEST_CHANGES"
+              ? "CHANGES_REQUESTED"
+              : body.event === "APPROVE"
+                ? "APPROVED"
+                : "COMMENTED",
         });
+        for (const comment of Array.isArray(body.comments) ? body.comments : []) {
+          const entry = comment as { body?: unknown };
+          pullComments.push({
+            body: entry.body,
+            user: { login: identity.botLogin, type: "Bot" },
+            commit_id: typeof body.commit_id === "string" ? body.commit_id : fixtureJob.headSha,
+          });
+        }
         if (options.ambiguous) throw new TypeError("lost connection with token=secret");
         return Response.json({ id: 44 });
       }
@@ -157,7 +205,7 @@ function setup(
     publish: (job, result) => github.publishReview(job, result),
     fingerprints: (result) => Promise.all(result.findings.map(findingFingerprint)),
   };
-  return { services, steps, posts, requests, store };
+  return { services, steps, posts, updates, requests, store };
 }
 async function signedRequest(
   value: unknown,
@@ -294,7 +342,9 @@ describe("webhook to workflow to review", () => {
     );
     expect(rerun.status).toBe(202);
     expect(await rerun.json()).toMatchObject({ status: "started" });
-    expect(fixture.posts).toHaveLength(2);
+    expect(fixture.posts).toHaveLength(1);
+    expect(fixture.updates).toHaveLength(1);
+    expect(String(fixture.updates[0]?.body)).toContain(accepted!.reviewId);
     expect(accepted?.action).toBe("rerequested");
     expect(accepted?.reviewId).not.toBe(originalReviewId);
   });

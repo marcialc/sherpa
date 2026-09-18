@@ -58,7 +58,7 @@ export class GitHubApi {
   async request(
     path: string,
     options: {
-      method?: "GET" | "POST" | "PATCH";
+      method?: "GET" | "POST" | "PATCH" | "PUT";
       body?: unknown;
       maxBytes?: number;
       allow404?: boolean;
@@ -67,6 +67,7 @@ export class GitHubApi {
     if (!path.startsWith("/") || path.startsWith("//"))
       throw new GitHubError("INVALID_GITHUB_PATH");
     const method = options.method ?? "GET";
+    const mutating = method === "POST" || method === "PUT";
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     if (body && new TextEncoder().encode(body).byteLength > 512000)
       throw new GitHubError("GITHUB_REQUEST_TOO_LARGE");
@@ -88,7 +89,7 @@ export class GitHubApi {
         },
       });
     } catch {
-      throw new GitHubError("GITHUB_NETWORK_ERROR", undefined, method === "POST");
+      throw new GitHubError("GITHUB_NETWORK_ERROR", undefined, mutating);
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -96,7 +97,7 @@ export class GitHubApi {
       throw new GitHubError(
         `GITHUB_HTTP_${response.status}`,
         response.status,
-        method === "POST" && response.status >= 500,
+        mutating && response.status >= 500,
       );
     }
     try {
@@ -105,7 +106,7 @@ export class GitHubApi {
         hasNext: /rel="next"/.test(response.headers.get("link") ?? ""),
       };
     } catch {
-      throw new GitHubError("INVALID_GITHUB_RESPONSE", response.status, method === "POST");
+      throw new GitHubError("INVALID_GITHUB_RESPONSE", response.status, mutating);
     }
   }
 }

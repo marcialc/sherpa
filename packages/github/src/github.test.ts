@@ -109,16 +109,27 @@ function review(extra: Record<string, unknown> = {}) {
 function apiMock(
   options: {
     reviews?: unknown[];
+    comments?: unknown[];
     pr?: () => unknown;
     post?: () => Response | Promise<Response>;
+    put?: () => Response | Promise<Response>;
+    dismiss?: () => Response | Promise<Response>;
     files?: unknown[];
   } = {},
 ): ReturnType<typeof vi.fn<Fetcher>> {
   return vi.fn<Fetcher>(async (input, init) => {
     const url = new URL(String(input));
+    if (url.pathname.endsWith("/dismissals") && init?.method === "PUT")
+      return options.dismiss ? options.dismiss() : json({ id: 91, state: "DISMISSED" });
+    if (/\/reviews\/\d+$/.test(url.pathname) && init?.method === "PUT")
+      return options.put
+        ? options.put()
+        : json({ id: Number(url.pathname.slice(url.pathname.lastIndexOf("/") + 1)) });
     if (url.pathname.endsWith("/reviews") && init?.method === "POST")
       return options.post ? options.post() : json({ id: 91 });
     if (url.pathname.endsWith("/reviews")) return json(options.reviews ?? []);
+    if (url.pathname.endsWith("/comments") && init?.method === "POST") return json({ id: 1 });
+    if (url.pathname.endsWith("/comments")) return json(options.comments ?? []);
     if (url.pathname.endsWith("/files"))
       return json(
         options.files ?? [
@@ -618,16 +629,19 @@ describe("V0 round trip and reliable publication", () => {
     const posted = JSON.parse(
       String(mocked.mock.calls.find(([, init]) => init?.method === "POST")![1]?.body),
     ) as { body: string; comments: { body: string }[] };
-    expect(posted.body).toContain("**2 Must Fix · 1 Should Fix · 1 Warning · 1 Nit**");
+    expect(posted.body).toContain("**🔴 2 Must Fix · 🟠 1 Should Fix · 🟡 1 Warning · 🔵 1 Nit**");
     expect(posted.body.match(/^### [🔴🟠🟡🔵].*$/gmu)).toEqual([
       "### 🔴 Must Fix",
       "### 🟠 Should Fix",
       "### 🟡 Warnings",
       "### 🔵 Nits",
     ]);
-    expect(posted.body).toContain(`1. **${finding.title}**`);
+    expect(posted.body).toContain(`1. **${finding.title}** · \`${finding.path}:${finding.line}\``);
     expect(posted.body).toContain("2. **Connection leak**");
-    expect(posted.comments[0]?.body).toContain("🔴 **Must Fix · Security**");
+    expect(posted.body).toContain(`- ${finding.title}`);
+    expect(posted.body).toContain("- Connection leak");
+    expect(posted.comments[0]?.body).toContain("**🔴 Must Fix** · Security");
+    expect(posted.comments[0]?.body).toContain("> **Fix:**");
     expect(posted.comments[0]?.body).not.toContain("## 🤖 AI Review");
   });
 
@@ -655,7 +669,7 @@ describe("V0 round trip and reliable publication", () => {
     expect(posted.body.match(/^\d+\. \*\*/gm)).toHaveLength(35 + 5 + 3 + 3);
     expect(published.postedFingerprints).toHaveLength(46);
     expect(posted.body).toContain("10 lower-priority findings omitted");
-    expect(posted.body).toContain("35 Must Fix · 7 Should Fix · 7 Warnings · 7 Nits");
+    expect(posted.body).toContain("🔴 35 Must Fix · 🟠 7 Should Fix · 🟡 7 Warnings · 🔵 7 Nits");
     expect(Buffer.byteLength(posted.body)).toBeLessThan(60000);
   });
 
@@ -689,7 +703,7 @@ describe("V0 round trip and reliable publication", () => {
     const posted = JSON.parse(
       String(mocked.mock.calls.find(([, init]) => init?.method === "POST")![1]?.body),
     ) as { body: string; event: string };
-    expect(posted.body).toContain("**1 Must Fix**");
+    expect(posted.body).toContain("**🔴 1 Must Fix**");
     expect(posted.body).not.toContain("1 Nit");
     expect(published.postedFingerprints).toHaveLength(1);
     expect(posted.event).toBe("REQUEST_CHANGES");
@@ -749,9 +763,10 @@ describe("V0 round trip and reliable publication", () => {
     expect(posted.body).toContain("⚠️ Review Incomplete");
     expect(posted.body).toContain("Confirmed findings below are still listed");
     expect(posted.body).toContain(finding.title);
-    expect(posted.body).toContain("Some repository search or file context was truncated");
-    expect(posted.body).toContain("Some proposed findings exceeded the judge");
-    expect(posted.body).toContain("A reviewer ran out of context and was skipped");
+    expect(posted.body).toContain("### Review notes");
+    expect(posted.body).toContain("- Some repository search or file context was truncated");
+    expect(posted.body).toContain("- Some proposed findings exceeded the judge");
+    expect(posted.body).toContain("- A reviewer ran out of context and was skipped");
   });
 
   it("limits only inline comments while preserving accepted findings and outcome in the summary", async () => {
@@ -779,6 +794,39 @@ describe("V0 round trip and reliable publication", () => {
       expect(published.postedFingerprints).toHaveLength(2);
     }
   });
+  it("formats inline comments and summaries as scannable markdown", () => {
+    expect(formatFinding(finding)).toBe(
+      [
+        "**🔴 Must Fix** · Security",
+        "",
+        "**Session deletion lacks ownership check**",
+        "",
+        "Another user's session can be deleted with its ID\\.",
+        "",
+        "> **Fix:** Compare the session owner to the authenticated user before deleting\\.",
+      ].join("\n"),
+    );
+    const summary = formatSummary(
+      job,
+      result,
+      [{ finding, fingerprint: "a".repeat(64) }],
+      ["a".repeat(64)],
+    );
+    expect(summary).toContain("## 🤖 AI Review\n\n### ❌ Not Approved");
+    expect(summary).toContain("**🔴 1 Must Fix**");
+    expect(summary).toContain(
+      "Resolve the blocker before merging:\n\n- Session deletion lacks ownership check",
+    );
+    expect(summary).toContain("---\n\n### 🔴 Must Fix");
+    expect(summary).toContain(
+      `1. **Session deletion lacks ownership check** · \`${finding.path}:${finding.line}\``,
+    );
+    expect(summary).toContain(
+      "> **Fix:** Compare the session owner to the authenticated user before deleting\\.",
+    );
+    expect(summary).toContain(`*Reviewed commit \`${job.headSha}\`.*`);
+  });
+
   it("keeps thirty Unicode summary findings bounded and neutralizes injected markers, mentions and credentials", () => {
     const hostile = {
       ...finding,
@@ -817,7 +865,9 @@ describe("V0 round trip and reliable publication", () => {
       warnings: ["BILLING_NOT_CONFIGURED"],
     };
     const summary = formatSummary(job, failed, [], [], "https://sherpa.example.workers.dev");
-    expect(summary).toContain("Configure billing at https://sherpa.example.workers.dev/setup");
+    expect(summary).toContain(
+      "Configure billing at the [setup page](https://sherpa.example.workers.dev/setup).",
+    );
     expect(summary).toContain("no Cloudflare AI Gateway");
     expect(formatSummary(job, failed, [], [], "javascript:alert(1)")).not.toContain("javascript:");
     expect(trustedSetupOrigin("https://sherpa.example.workers.dev/extra")).toBeUndefined();
@@ -872,6 +922,216 @@ describe("V0 round trip and reliable publication", () => {
     expect(body.comments).toEqual([]);
     expect(body.body).toContain("src/auth.ts:999");
     expect(body.event).toBe("REQUEST_CHANGES");
+  });
+
+  it("overwrites the existing own-bot summary when re-reviewing the same commit", async () => {
+    const fingerprint = await findingFingerprint(finding);
+    const previous = review({
+      state: "CHANGES_REQUESTED",
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->\n${findingMarker(fingerprint)}`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [
+        {
+          body: `${formatFinding(finding)}\n\n${findingMarker(fingerprint)}`,
+          user: { login: identity.botLogin, type: "Bot" },
+          commit_id: headSha,
+        },
+      ],
+    });
+    const published = await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    expect(published.id).toBe(91);
+    expect(published.postedFingerprints).toEqual([fingerprint]);
+    expect(mocked.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    const put = mocked.mock.calls.find(
+      ([url, init]) => init?.method === "PUT" && String(url).endsWith("/reviews/91"),
+    );
+    expect(put).toBeDefined();
+    const body = JSON.parse(String(put![1]?.body)) as { body: string; comments?: unknown };
+    expect(body.body).toContain(reviewMarker(job));
+    expect(body.body).toContain(finding.title);
+    expect(body).not.toHaveProperty("comments");
+  });
+
+  it("posts a new inline comment for a finding that the previous review lacked", async () => {
+    const previous = review({
+      state: "CHANGES_REQUESTED",
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({ reviews: [previous], comments: [] });
+    await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    const put = mocked.mock.calls.find(
+      ([url, init]) => init?.method === "PUT" && String(url).endsWith("/reviews/91"),
+    );
+    expect(put).toBeDefined();
+    const commentPosts = mocked.mock.calls.filter(
+      ([url, init]) => init?.method === "POST" && String(url).endsWith("/comments"),
+    );
+    expect(commentPosts).toHaveLength(1);
+    expect(JSON.parse(String(commentPosts[0]![1]?.body))).toMatchObject({
+      path: file.path,
+      line: 2,
+      side: "RIGHT",
+      commit_id: headSha,
+    });
+    expect(
+      mocked.mock.calls.filter(
+        ([url, init]) => init?.method === "POST" && String(url).endsWith("/reviews"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("does not dismiss a blocking review when the re-run fails", async () => {
+    const previous = review({
+      state: "CHANGES_REQUESTED",
+      body: `**${finding.title}**\n\n<!-- sherpa:review:${"c".repeat(64)} -->\n${findingMarker("d".repeat(64))}`,
+    });
+    const mocked = apiMock({ reviews: [previous] });
+    await new GitHubClient("token", mocked, identity).publishReview(job, {
+      ...result,
+      findings: [],
+      outcome: "REVIEW_FAILED",
+      coverageComplete: false,
+    });
+    expect(mocked.mock.calls.filter(([url]) => String(url).endsWith("/dismissals"))).toHaveLength(
+      0,
+    );
+    expect(
+      mocked.mock.calls.filter(
+        ([url, init]) => init?.method === "POST" && String(url).endsWith("/reviews"),
+      ),
+    ).toHaveLength(0);
+    const put = mocked.mock.calls.find(
+      ([url, init]) => init?.method === "PUT" && String(url).endsWith("/reviews/91"),
+    );
+    const body = JSON.parse(String(put![1]?.body)).body as string;
+    expect(body).toContain("Re-run did not complete");
+    expect(body).toContain(finding.title);
+    expect(body).toContain(reviewMarker(job));
+    expect(body).not.toContain("Review could not be completed");
+  });
+
+  it("posts replacement inlines then dismisses the previous review", async () => {
+    const previous = review({
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [],
+      post: () => json({ id: 92 }),
+    });
+    await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    const writes = mocked.mock.calls
+      .filter(([, init]) => init?.method === "POST" || init?.method === "PUT")
+      .map(([url, init]) => `${init?.method} ${String(url).replace("https://api.github.com", "")}`);
+    expect(writes).toEqual([
+      "POST /repos/acme/example/pulls/8/reviews",
+      "PUT /repos/acme/example/pulls/8/reviews/91/dismissals",
+    ]);
+    const posted = JSON.parse(
+      String(mocked.mock.calls.find(([, init]) => init?.method === "POST")![1]?.body),
+    ) as { event: string; comments: unknown[]; body: string };
+    expect(posted.event).toBe("REQUEST_CHANGES");
+    expect(posted.comments).toHaveLength(1);
+    expect(posted.body).toContain(reviewMarker(job));
+  });
+
+  it("still inlines a finding whose only prior comment is on an older commit", async () => {
+    const fingerprint = await findingFingerprint(finding);
+    const previous = review({
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [
+        {
+          body: `${formatFinding(finding)}\n\n${findingMarker(fingerprint)}`,
+          user: { login: identity.botLogin, type: "Bot" },
+          commit_id: baseSha,
+        },
+      ],
+      post: () => json({ id: 92 }),
+    });
+    await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    const posted = JSON.parse(
+      String(
+        mocked.mock.calls.find(
+          ([url, init]) => init?.method === "POST" && String(url).endsWith("/reviews"),
+        )![1]?.body,
+      ),
+    ) as { comments: unknown[] };
+    expect(posted.comments).toHaveLength(1);
+  });
+
+  it("does not duplicate inline comments already posted on the commit", async () => {
+    const fingerprint = await findingFingerprint(finding);
+    const previous = review({
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [
+        {
+          body: `${formatFinding(finding)}\n\n${findingMarker(fingerprint)}`,
+          user: { login: identity.botLogin, type: "Bot" },
+          commit_id: headSha,
+        },
+      ],
+      post: () => json({ id: 92 }),
+    });
+    await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    const posted = JSON.parse(
+      String(
+        mocked.mock.calls.find(
+          ([url, init]) => init?.method === "POST" && String(url).endsWith("/reviews"),
+        )![1]?.body,
+      ),
+    ) as { comments: unknown[] };
+    expect(posted.comments).toEqual([]);
+  });
+
+  it("still publishes when an outdated review cannot be dismissed", async () => {
+    const previous = review({
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [],
+      post: () => json({ id: 92 }),
+      dismiss: () => json({ message: "forbidden" }, 403),
+    });
+    const published = await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    expect(published.id).toBe(92);
+    expect(
+      mocked.mock.calls.filter(
+        ([url, init]) => init?.method === "POST" && String(url).endsWith("/reviews"),
+      ),
+    ).toHaveLength(1);
+    const note = mocked.mock.calls.find(
+      ([url, init]) => init?.method === "PUT" && String(url).endsWith("/reviews/92"),
+    );
+    expect(JSON.parse(String(note![1]?.body)).body).toContain(
+      "A previous Sherpa review on this commit could not be dismissed.",
+    );
+  });
+
+  it("accepts a full-size dismissal response", async () => {
+    const previous = review({
+      body: `<!-- sherpa:review:${"c".repeat(64)} -->`,
+    });
+    const mocked = apiMock({
+      reviews: [previous],
+      comments: [],
+      post: () => json({ id: 92 }),
+      dismiss: () => json({ id: 91, state: "DISMISSED", body: "x".repeat(70000) }),
+    });
+    await new GitHubClient("token", mocked, identity).publishReview(job, result);
+    expect(
+      mocked.mock.calls.some(
+        ([url, init]) => init?.method === "PUT" && String(url).endsWith("/reviews/92"),
+      ),
+    ).toBe(false);
   });
 
   it("reconciles only exact own-bot submitted reviews at the expected head", async () => {
