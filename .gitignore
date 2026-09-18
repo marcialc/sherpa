@@ -1,5 +1,10 @@
 node_modules/
-.wrangler/
+# Wrangler's scratch directory, except the checked-in deploy config redirect
+# that points flag-free `wrangler` commands at apps/worker/wrangler.jsonc.
+.wrangler/*
+!.wrangler/deploy/
+.wrangler/deploy/*
+!.wrangler/deploy/config.json
 dist/
 coverage/
 artifacts/evals/
