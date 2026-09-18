@@ -1342,6 +1342,57 @@ describe("verified investigation protocol", () => {
     expect(result.warnings).toContain("JUDGE_MODEL_INVALID_SCHEMA");
   });
 
+  it("drops an unknown judge candidateId without discarding the rest of the batch", async () => {
+    const options = singleReviewer(
+      fixture((input) => {
+        const raw = JSON.parse(input.user);
+        const request = raw.originalTask ? { ...input, user: raw.originalTask } : input;
+        if (request.model !== "judge" || JSON.parse(request.user).phase !== "DECIDE")
+          return replayResponse(request, { hypothesis, relatedPath });
+        const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
+          decisions: Array<Record<string, unknown>>;
+        };
+        output.decisions.push({
+          candidateId: "candidate-that-was-never-proposed",
+          verdict: "reject",
+          reason: "A verdict for an identifier the executor never issued.",
+        });
+        return modelResponse(output);
+      }),
+    );
+    const result = await runReview(options);
+    expect(result.findings).toHaveLength(1);
+    expect(result.coverageComplete).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("reports an unanswered judge candidate as a coverage gap instead of an approval", async () => {
+    const options = singleReviewer(
+      fixture((input) => {
+        const raw = JSON.parse(input.user);
+        const request = raw.originalTask ? { ...input, user: raw.originalTask } : input;
+        if (request.model !== "judge" || JSON.parse(request.user).phase !== "DECIDE")
+          return replayResponse(request, { hypothesis, relatedPath });
+        const output = JSON.parse(replayResponse(request, { hypothesis, relatedPath }).text) as {
+          decisions: Array<Record<string, unknown>>;
+        };
+        output.decisions = [
+          {
+            candidateId: "candidate-that-was-never-proposed",
+            verdict: "reject",
+            reason: "A verdict for an identifier the executor never issued.",
+          },
+        ];
+        return modelResponse(output);
+      }),
+    );
+    const result = await runReview(options);
+    expect(result.findings).toEqual([]);
+    expect(result.coverageComplete).toBe(false);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+    expect(result.warnings).toContain("JUDGE_UNDECIDED_CANDIDATES");
+  });
+
   it("fails closed on boolean-only acceptance without factual causal checks", async () => {
     const options = fixture((request) =>
       request.model === "judge" && JSON.parse(request.user).phase === "DECIDE"

@@ -157,6 +157,7 @@ function reviewNote(code: string): string {
     JUDGE_MODEL_INPUT_LIMIT: "Some proposed findings exceeded the judge's context limit.",
     JUDGE_CONTEXT_UNRESOLVED:
       "The judge could not obtain enough context to resolve every proposed finding.",
+    JUDGE_UNDECIDED_CANDIDATES: "The judge did not return a verdict for every proposed finding.",
     JUDGE_CONTEXT_INCOMPLETE: "Some context requested by the judge was unavailable or truncated.",
     SPECIALIST_CONTEXT_INCOMPLETE:
       "Some context or validation requested by a reviewer was unavailable or truncated.",
@@ -168,6 +169,8 @@ function reviewNote(code: string): string {
     return "A reviewer ran out of context and was skipped; other reviewers continued.";
   if (/_MODEL_INVALID_(?:JSON|SCHEMA)$/.test(code) || /_PROVIDER_INCOMPLETE_RESPONSE$/.test(code))
     return "A reviewer returned unusable output and was skipped; other reviewers continued.";
+  if (/_UNASSESSED_HYPOTHESES$/.test(code))
+    return "A reviewer did not assess every issue it proposed; the rest of its review continued.";
   if (/^[A-Z_]+$/.test(code)) return `A review step did not complete (${code}).`;
   return code;
 }

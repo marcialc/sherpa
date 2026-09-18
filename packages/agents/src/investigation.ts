@@ -179,13 +179,24 @@ export type VerifiedCandidate = {
   evidence: EvidenceRecord[];
 };
 
-export function validateIds(expected: string[], received: string[]): void {
-  if (
-    expected.length !== received.length ||
-    new Set(received).size !== received.length ||
-    received.some((value) => !expected.includes(value))
-  )
-    throw new ProviderError("INVALID_INVESTIGATION_IDS");
+/**
+ * Model id sets are reconciled, never trusted. A duplicate or unknown id is dropped and the
+ * unanswered ids are reported, so one malformed response narrows a batch instead of discarding it.
+ * Callers must treat `missing` as a coverage gap wherever the dropped entry carried a decision.
+ */
+export function reconcileIds<T>(
+  expected: string[],
+  received: T[],
+  idOf: (item: T) => string,
+): { answered: T[]; missing: string[] } {
+  const seen = new Set<string>();
+  const answered = received.filter((item) => {
+    const id = idOf(item);
+    if (seen.has(id) || !expected.includes(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return { answered, missing: expected.filter((id) => !seen.has(id)) };
 }
 
 function requestPath(record: EvidenceRecord): string | undefined {

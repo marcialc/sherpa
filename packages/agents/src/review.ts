@@ -47,7 +47,7 @@ import {
   judgeResponseSchema,
   attestChecks,
   EvidenceAttestationError,
-  validateIds,
+  reconcileIds,
   type EvidenceChecks,
   type Hypothesis,
   type EvidenceRecord,
@@ -669,7 +669,8 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
             );
         });
       });
-      let verification = await invoke(
+      const hypothesisIds = hypotheses.map((hypothesis) => hypothesis.id);
+      const verification = await invoke(
         model,
         agent,
         verificationPrompt,
@@ -678,11 +679,12 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         verifyTokens,
         preserve(),
       );
-      validateIds(
-        hypotheses.map((hypothesis) => hypothesis.id),
-        verification.assessments.map((assessment) => assessment.hypothesisId),
+      let assessed = reconcileIds(
+        hypothesisIds,
+        verification.assessments,
+        (assessment) => assessment.hypothesisId,
       );
-      const more = verification.assessments.filter(
+      const more = assessed.answered.filter(
         (assessment) => assessment.decision === "needs-more-context",
       );
       if (more.length) {
@@ -697,7 +699,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
                 judgeReserve.ms,
               ),
             );
-        verification = await invoke(
+        const followup = await invoke(
           model,
           agent,
           verificationPrompt,
@@ -706,13 +708,16 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           verifyTokens,
           preserve(),
         );
-        validateIds(
-          hypotheses.map((hypothesis) => hypothesis.id),
-          verification.assessments.map((assessment) => assessment.hypothesisId),
+        // A follow-up answers the re-examined hypotheses; earlier decisions stand for the rest.
+        assessed = reconcileIds(
+          hypothesisIds,
+          [...followup.assessments, ...assessed.answered],
+          (assessment) => assessment.hypothesisId,
         );
       }
+      if (assessed.missing.length) incomplete(`${agent.toUpperCase()}_UNASSESSED_HYPOTHESES`);
       const verified: VerifiedCandidate[] = [];
-      for (const assessment of verification.assessments) {
+      for (const assessment of assessed.answered) {
         if (assessment.decision === "rejected") continue;
         if (assessment.decision === "needs-more-context") {
           incomplete("SPECIALIST_CONTEXT_UNRESOLVED");
@@ -813,6 +818,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         incomplete("JUDGE_INPUT_LIMIT");
         continue;
       }
+      const candidateIds = judged.map((candidate) => candidate.id);
       const judgeRecords: EvidenceRecord[] = [];
       const judgeEnvelope = (phase: "VERIFY" | "DECIDE", followup = false) => ({
         phase,
@@ -855,11 +861,10 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           ...queuedReserve(true),
           ms: Math.min(30000, Math.floor(budget.remainingMs() / 3)),
         });
-        validateIds(
-          judged.map((candidate) => candidate.id),
-          planning.requests.map((item) => item.candidateId),
-        );
-        for (const item of planning.requests)
+        // A skipped disproof request is not a coverage gap: DECIDE still has to attest the
+        // candidate against judge-owned records before it can be accepted.
+        const planned = reconcileIds(candidateIds, planning.requests, (item) => item.candidateId);
+        for (const item of planned.answered)
           judgeRecords.push(
             await evidence.capture(item.request, "judge", "investigation", item.candidateId),
           );
@@ -877,17 +882,14 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
               );
           });
         });
-        let decision = await invokeJudge(
+        const decision = await invokeJudge(
           "DECIDE",
           attestedJudgeSchema,
           judgeTokens,
           queuedReserve(false),
         );
-        validateIds(
-          judged.map((candidate) => candidate.id),
-          decision.decisions.map((item) => item.candidateId),
-        );
-        const more = decision.decisions.filter((item) => item.verdict === "needs-more-context");
+        let decided = reconcileIds(candidateIds, decision.decisions, (item) => item.candidateId);
+        const more = decided.answered.filter((item) => item.verdict === "needs-more-context");
         if (more.length) {
           const requests = more.flatMap((item) =>
             item.requests!.map((request) => ({ candidateId: item.candidateId, request })),
@@ -899,21 +901,25 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
               judgeRecords.push(
                 await evidence.capture(item.request, "judge", "investigation", item.candidateId),
               );
-            decision = await invokeJudge(
+            const followup = await invokeJudge(
               "DECIDE",
               attestedJudgeSchema,
               judgeTokens,
               queuedReserve(false),
               true,
             );
-            validateIds(
-              judged.map((candidate) => candidate.id),
-              decision.decisions.map((item) => item.candidateId),
+            // A follow-up answers the re-examined candidates; earlier verdicts stand for the rest.
+            decided = reconcileIds(
+              candidateIds,
+              [...followup.decisions, ...decided.answered],
+              (item) => item.candidateId,
             );
           }
         }
+        // An unanswered candidate is neither accepted nor rejected, so coverage is incomplete.
+        if (decided.missing.length) incomplete("JUDGE_UNDECIDED_CANDIDATES");
         const suppressed = new Set<string>();
-        for (const item of decision.decisions) {
+        for (const item of decided.answered) {
           if (!judged.some((candidate) => candidate.id === item.candidateId)) continue;
           if (item.verdict === "merge") {
             const candidate = judged.find((candidate) => candidate.id === item.candidateId)!;
@@ -928,15 +934,14 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
                       other.hypothesis.path === candidate.hypothesis.path &&
                       other.hypothesis.line === candidate.hypothesis.line,
                   ) ||
-                  decision.decisions.find((other) => other.candidateId === id)?.verdict !==
-                    "reject",
+                  decided.answered.find((other) => other.candidateId === id)?.verdict !== "reject",
               )
             )
               throw new ProviderError("JUDGE_INVALID_MERGE");
             item.mergedWith.forEach((id) => suppressed.add(id));
           } else if (item.mergedWith?.length) throw new ProviderError("JUDGE_INVALID_MERGE");
         }
-        for (const item of decision.decisions) {
+        for (const item of decided.answered) {
           if (item.verdict === "needs-more-context") {
             incomplete("JUDGE_CONTEXT_UNRESOLVED");
             continue;
