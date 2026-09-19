@@ -9,7 +9,12 @@ import type {
 } from "@sherpa/schemas";
 import { BudgetError, ProviderError, type ReviewBudget } from "@sherpa/models";
 import { log } from "@sherpa/shared";
-import { strictToolRequestSchema, type EvidenceRecord, type Hypothesis } from "./investigation";
+import {
+  maxToolLineSpan,
+  strictToolRequestSchema,
+  type EvidenceRecord,
+  type Hypothesis,
+} from "./investigation";
 import { emitDiagnostic, toolDiagnosticCode, type ReviewDiagnostic } from "./diagnostics";
 
 const encoder = new TextEncoder();
@@ -64,7 +69,7 @@ export class EvidenceStore {
       const startLine = request.startLine ?? 1;
       const endLine = request.endLine ?? startLine + 59;
       if (endLine < startLine) unscoped("inverted_range", endLine - startLine);
-      if (endLine - startLine >= 100) unscoped("line_span", endLine - startLine);
+      if (endLine - startLine > maxToolLineSpan) unscoped("line_span", endLine - startLine);
       request = { ...request, startLine, endLine };
     }
     if ((request.tool === "gitDiff" || request.tool === "gitLog") && !request.path)
