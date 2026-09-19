@@ -194,7 +194,7 @@ export class ReviewBudget {
     outputTokens: number;
     schema: z.ZodType<T>;
     outputSchema?: Record<string, unknown>;
-    reasoningEffort?: "none" | "low" | "medium" | "high";
+    reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
     preserve?: BudgetReserve;
     repairInvalidOutput?: boolean;
     onInvalidOutput?: (diagnostic: OutputDiagnostic) => void;
