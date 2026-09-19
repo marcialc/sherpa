@@ -32,6 +32,10 @@ export type LogFields = {
   count?: number;
   outcome?: string;
   code?: string;
+  model?: string;
+  /** The provider's own error identifier, and the request parameter it blamed. */
+  providerCode?: string;
+  param?: string;
   totalEstimatedUsd?: number;
 };
 /** Deliberately narrow fields: error bodies, model text and repository content never enter logs. */

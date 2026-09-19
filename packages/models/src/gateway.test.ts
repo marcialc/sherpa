@@ -215,4 +215,58 @@ describe("Cloudflare AI Gateway single-token inference", () => {
     ).rejects.toThrow("MODEL_PRICE_UNKNOWN");
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["openai/gpt-5.6-terra", "minimal", "minimal"],
+    ["openai/gpt-5.6-luna", "low", "low"],
+    ["openai/gpt-4.1-mini", "minimal", undefined],
+  ])("sends reasoning_effort to %s only when the model accepts it", async (model, effort, sent) => {
+    const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      model,
+      reasoningEffort: effort as "minimal" | "low",
+    });
+    expect(JSON.parse(send.mock.calls[0]![1]!.body as string).reasoning_effort).toBe(sent);
+  });
+
+  it("keeps the parameter a rejected request named, so a 400 says which field to change", async () => {
+    const send = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          error: {
+            code: "unsupported_value",
+            param: "reasoning_effort",
+            message: `Unsupported value. Sent with ${gateway.apiToken}.`,
+          },
+        },
+        { status: 400 },
+      ),
+    );
+    await expect(
+      createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete(
+        request,
+      ),
+    ).rejects.toMatchObject({
+      message: "PROVIDER_HTTP_400",
+      providerCode: "unsupported_value",
+      param: "reasoning_effort",
+    });
+  });
+
+  it("drops a provider identifier that carries prose or the gateway credential", async () => {
+    const send = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json(
+          { error: { code: gateway.apiToken, param: "a name with spaces is not an identifier" } },
+          { status: 400 },
+        ),
+      );
+    await expect(
+      createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete(
+        request,
+      ),
+    ).rejects.toMatchObject({ message: "PROVIDER_HTTP_400", providerCode: "", param: "" });
+  });
 });

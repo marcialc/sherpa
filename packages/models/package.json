@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@sherpa/schemas": "workspace:*",
+    "@sherpa/shared": "workspace:*",
     "zod": "^4.6.5"
   }
 }

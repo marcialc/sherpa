@@ -81,23 +81,23 @@ Draft PRs are skipped unless `.ai-reviewer.yml` sets `review.reviewDrafts: true`
 
 ## Review severity
 
-| Priority        | Meaning                                              | Blocks merge? |
-| --------------- | ---------------------------------------------------- | ------------- |
-| 🔴 **Must Fix** | Verified issue that should be resolved before merge. | Yes           |
-| 🟠 **Should Fix** | Worthwhile and concrete; safe to merge.            | No            |
-| 🟡 **Warning**  | Stated assumption, compatibility, or operational risk. | No          |
-| 🔵 **Nit**      | Optional, narrow improvement.                        | No            |
+| Priority          | Meaning                                                | Blocks merge? |
+| ----------------- | ------------------------------------------------------ | ------------- |
+| 🔴 **Must Fix**   | Verified issue that should be resolved before merge.   | Yes           |
+| 🟠 **Should Fix** | Worthwhile and concrete; safe to merge.                | No            |
+| 🟡 **Warning**    | Stated assumption, compatibility, or operational risk. | No            |
+| 🔵 **Nit**        | Optional, narrow improvement.                          | No            |
 
 Must Fix and Should Fix require a verified, concrete action. Unsupported allegations are not published as warnings or nits. Missing test coverage alone is not a finding.
 
 ## Review outcomes
 
-| Verdict                       | When                                             | GitHub event      | Sherpa check      |
-| ----------------------------- | ------------------------------------------------ | ----------------- | ----------------- |
-| ✅ **Approved**               | No accepted findings.                            | Approves the PR   | Pass              |
-| 🟡 **Approved With Comments** | Only non-blocking findings.                      | Comment           | Pass              |
-| ❌ **Not Approved**           | At least one verified Must Fix.                  | Request changes   | Fail              |
-| ⚠️ **Review Incomplete**      | Coverage failed, and there is no Must Fix.       | Comment           | Fail              |
+| Verdict                       | When                                       | GitHub event    | Sherpa check |
+| ----------------------------- | ------------------------------------------ | --------------- | ------------ |
+| ✅ **Approved**               | No accepted findings.                      | Approves the PR | Pass         |
+| 🟡 **Approved With Comments** | Only non-blocking findings.                | Comment         | Pass         |
+| ❌ **Not Approved**           | At least one verified Must Fix.            | Request changes | Fail         |
+| ⚠️ **Review Incomplete**      | Coverage failed, and there is no Must Fix. | Comment         | Fail         |
 
 If coverage is incomplete **and** a Must Fix was already confirmed, Sherpa still requests changes and says so. A failed or incomplete re-run does not dismiss an existing Request changes review.
 
@@ -126,15 +126,15 @@ flowchart TD
 
 <!-- TODO visual: replace the Mermaid diagram with a designed architecture image if GitHub rendering is not enough. -->
 
-| Piece | Role |
-| ----- | ---- |
-| `apps/worker` | Webhook, `/setup`, Workflows, Durable Objects, D1, sandbox container |
-| `packages/agents` | Routing, specialist investigation, judge, policy |
-| `packages/github` | App auth, PR fetch, review publication, checks |
-| `packages/models` | Cloudflare AI Gateway client, budgets, structured output |
-| `packages/sandbox` | Isolated Git fetch and repository tools |
-| `packages/repository-index` | JS/TS metadata index and retrieval |
-| `packages/workflow` | Durable review pipeline and PR ledger |
+| Piece                       | Role                                                                 |
+| --------------------------- | -------------------------------------------------------------------- |
+| `apps/worker`               | Webhook, `/setup`, Workflows, Durable Objects, D1, sandbox container |
+| `packages/agents`           | Routing, specialist investigation, judge, policy                     |
+| `packages/github`           | App auth, PR fetch, review publication, checks                       |
+| `packages/models`           | Cloudflare AI Gateway client, budgets, structured output             |
+| `packages/sandbox`          | Isolated Git fetch and repository tools                              |
+| `packages/repository-index` | JS/TS metadata index and retrieval                                   |
+| `packages/workflow`         | Durable review pipeline and PR ledger                                |
 
 The Worker never does model or repository work in the webhook request. Details: [architecture](docs/architecture.md).
 
@@ -142,11 +142,11 @@ The Worker never does model or repository work in the webhook request. Details: 
 
 Install a GitHub App on a host that already runs Sherpa, or deploy the Worker yourself.
 
-| Goal | Start here |
-| ---- | ---------- |
-| **Use an existing Sherpa host** | Get that host's GitHub App install link and setup URL, then follow **Install on a host** below. |
-| **Run your own Sherpa** | Follow the [self-hosting guide](docs/self-hosting.md), then connect repositories with the same install steps. |
-| **Explore the code** | Clone the repo and run `pnpm test`. See [Development](#development). |
+| Goal                            | Start here                                                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **Use an existing Sherpa host** | Get that host's GitHub App install link and setup URL, then follow **Install on a host** below.               |
+| **Run your own Sherpa**         | Follow the [self-hosting guide](docs/self-hosting.md), then connect repositories with the same install steps. |
+| **Explore the code**            | Clone the repo and run `pnpm test`. See [Development](#development).                                          |
 
 People installing the App need GitHub access and their own Cloudflare AI Gateway. The host pays for Cloudflare compute and containers.
 
@@ -168,11 +168,11 @@ In the [Cloudflare dashboard](https://dash.cloudflare.com/):
 
 Keep these values:
 
-| Field | Value |
-| ----- | ----- |
+| Field                 | Value                                      |
+| --------------------- | ------------------------------------------ |
 | Cloudflare account ID | 32-character account ID from the dashboard |
-| AI Gateway name | Exact gateway name, such as `sherpa` |
-| API token | The Workers AI Read token |
+| AI Gateway name       | Exact gateway name, such as `sherpa`       |
+| API token             | The Workers AI Read token                  |
 
 The host chooses the models. Your gateway must support those catalog IDs.
 
@@ -190,10 +190,10 @@ Draft PRs and ordinary documentation-only changes are skipped. Converting a draf
 
 ### Cost
 
-| Cost | Who pays |
-| ---- | -------- |
-| Model usage | The Cloudflare account saved for that GitHub App installation |
-| Hosting, Workflows, containers, D1 | The person running the Sherpa service |
+| Cost                               | Who pays                                                      |
+| ---------------------------------- | ------------------------------------------------------------- |
+| Model usage                        | The Cloudflare account saved for that GitHub App installation |
+| Hosting, Workflows, containers, D1 | The person running the Sherpa service                         |
 
 The software is MIT-licensed. Cloudflare and model providers can still bill.
 
@@ -211,24 +211,24 @@ https://sherpa.YOUR-CLOUDFLARE-SUBDOMAIN.workers.dev
 
 Replace `YOUR-SHERPA-HOST` with that origin (no path).
 
-| GitHub setting | Value |
-| -------------- | ----- |
-| Homepage URL | Your project URL, such as `https://github.com/marcialc/sherpa` |
-| Callback URL | `https://YOUR-SHERPA-HOST/setup/callback` |
-| Setup URL | `https://YOUR-SHERPA-HOST/setup` |
-| Redirect on update | On |
-| Request user authorization (OAuth) during installation | Off — Sherpa starts sign-in from `/setup` |
-| Webhook URL | `https://YOUR-SHERPA-HOST/github/webhook` |
-| Webhook secret | A new random secret; the Worker uses the same value |
+| GitHub setting                                         | Value                                                          |
+| ------------------------------------------------------ | -------------------------------------------------------------- |
+| Homepage URL                                           | Your project URL, such as `https://github.com/marcialc/sherpa` |
+| Callback URL                                           | `https://YOUR-SHERPA-HOST/setup/callback`                      |
+| Setup URL                                              | `https://YOUR-SHERPA-HOST/setup`                               |
+| Redirect on update                                     | On                                                             |
+| Request user authorization (OAuth) during installation | Off — Sherpa starts sign-in from `/setup`                      |
+| Webhook URL                                            | `https://YOUR-SHERPA-HOST/github/webhook`                      |
+| Webhook secret                                         | A new random secret; the Worker uses the same value            |
 
 Repository permissions:
 
-| Permission | Access |
-| ---------- | ------ |
-| Metadata | Read-only |
-| Contents | Read-only |
+| Permission    | Access         |
+| ------------- | -------------- |
+| Metadata      | Read-only      |
+| Contents      | Read-only      |
 | Pull requests | Read and write |
-| Checks | Read and write |
+| Checks        | Read and write |
 
 Subscribe to **Pull request** events. GitHub also delivers **Check run** / **Check suite** `rerequested` when the App has Checks write access; Sherpa uses those to re-review a commit. Subscribe to **Push** if you want repository indexing.
 
@@ -315,17 +315,17 @@ This example caps inline comments at five and hides nits. Verified Must Fix find
 
 Checked-in defaults (when the file is omitted):
 
-| Setting | Default |
-| ------- | ------- |
-| `review.reviewDrafts` | `false` |
-| `review.maxComments` | `10` |
-| `review.findingLimits` | shouldFix 5, warnings 3, nits 3 |
-| `review.minimumConfidence` | `0.8` |
-| `routing.docsOnly` | `skip` |
-| `budget.maxUsdPerReview` | unlimited |
-| `budget.maxAgentCalls` | unlimited |
-| `budget.maxDurationMs` | `600000` (10 minutes) |
-| `validation.enabled` | `false` |
+| Setting                    | Default                         |
+| -------------------------- | ------------------------------- |
+| `review.reviewDrafts`      | `false`                         |
+| `review.maxComments`       | `10`                            |
+| `review.findingLimits`     | shouldFix 5, warnings 3, nits 3 |
+| `review.minimumConfidence` | `0.8`                           |
+| `routing.docsOnly`         | `skip`                          |
+| `budget.maxUsdPerReview`   | unlimited                       |
+| `budget.maxAgentCalls`     | unlimited                       |
+| `budget.maxDurationMs`     | `600000` (10 minutes)           |
+| `validation.enabled`       | `false`                         |
 
 Agents enabled by default: `correctness`, `security`, `performance`, `testing`, `types`, `lightweight`.
 
@@ -339,37 +339,37 @@ More options:
 
 Required Worker **secrets** (first deploy via `.env.sherpa`):
 
-| Secret | Purpose |
-| ------ | ------- |
-| `GITHUB_APP_ID` | Numeric GitHub App ID |
-| `GITHUB_PRIVATE_KEY` | App PEM private key |
-| `GITHUB_WEBHOOK_SECRET` | Same secret as the GitHub App webhook |
-| `GITHUB_CLIENT_SECRET` | OAuth client secret for `/setup` |
-| `SETUP_SESSION_SECRET` | HMAC secret for `/setup` sessions; 16–256 characters (32+ recommended) |
+| Secret                  | Purpose                                                                |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `GITHUB_APP_ID`         | Numeric GitHub App ID                                                  |
+| `GITHUB_PRIVATE_KEY`    | App PEM private key                                                    |
+| `GITHUB_WEBHOOK_SECRET` | Same secret as the GitHub App webhook                                  |
+| `GITHUB_CLIENT_SECRET`  | OAuth client secret for `/setup`                                       |
+| `SETUP_SESSION_SECRET`  | HMAC secret for `/setup` sessions; 16–256 characters (32+ recommended) |
 
 Required `vars` in `apps/worker/wrangler.jsonc`:
 
-| Variable | Purpose |
-| -------- | ------- |
-| `GITHUB_CLIENT_ID` | GitHub App client ID (not the App ID) |
-| `PUBLIC_BASE_URL` | Public HTTPS origin, no path |
-| `ROUTER_PROVIDER` / `ROUTER_MODEL` | Routing / lightweight model (`cloudflare` + catalog ID) |
-| `SPECIALIST_PROVIDER` / `SPECIALIST_MODEL` | Investigation model |
-| `JUDGE_PROVIDER` / `JUDGE_MODEL` | Independent judge model |
-| `MODEL_PRICING_JSON` | Token prices for every selected model; missing prices block calls |
+| Variable                                   | Purpose                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------- |
+| `GITHUB_CLIENT_ID`                         | GitHub App client ID (not the App ID)                             |
+| `PUBLIC_BASE_URL`                          | Public HTTPS origin, no path                                      |
+| `ROUTER_PROVIDER` / `ROUTER_MODEL`         | Routing / lightweight model (`cloudflare` + catalog ID)           |
+| `SPECIALIST_PROVIDER` / `SPECIALIST_MODEL` | Investigation model                                               |
+| `JUDGE_PROVIDER` / `JUDGE_MODEL`           | Independent judge model                                           |
+| `MODEL_PRICING_JSON`                       | Token prices for every selected model; missing prices block calls |
 
 Checked-in service limits:
 
-| Variable | Default | Purpose |
-| -------- | ------- | ------- |
-| `MAX_REVIEW_COST_USD` | `unlimited` | Estimated model-spend ceiling per review |
-| `MAX_AGENT_CALLS` | `unlimited` | Model-request ceiling |
-| `MAX_REVIEW_DURATION_MS` | `600000` | Analysis deadline |
-| `ALLOWED_MODELS_JSON` | `[]` | Models a repository may select as overrides |
-| `ALLOW_REPOSITORY_VALIDATION` | `false` | Allow repositories to opt in to executing project checks |
-| `INDEX_ENABLED` | `true` | Run the repository-index Workflow |
-| `INDEX_MODEL` | `openai/gpt-4.1-mini` | Gateway model for optional index summaries |
-| `INDEX_CONFIG_JSON` | `{}` | Bounded index settings; see [repository indexing](docs/repository-index.md) |
+| Variable                      | Default               | Purpose                                                                     |
+| ----------------------------- | --------------------- | --------------------------------------------------------------------------- |
+| `MAX_REVIEW_COST_USD`         | `unlimited`           | Estimated model-spend ceiling per review                                    |
+| `MAX_AGENT_CALLS`             | `unlimited`           | Model-request ceiling                                                       |
+| `MAX_REVIEW_DURATION_MS`      | `600000`              | Analysis deadline                                                           |
+| `ALLOWED_MODELS_JSON`         | `[]`                  | Models a repository may select as overrides                                 |
+| `ALLOW_REPOSITORY_VALIDATION` | `false`               | Allow repositories to opt in to executing project checks                    |
+| `INDEX_ENABLED`               | `true`                | Run the repository-index Workflow                                           |
+| `INDEX_MODEL`                 | `openai/gpt-4.1-mini` | Gateway model for optional index summaries                                  |
+| `INDEX_CONFIG_JSON`           | `{}`                  | Bounded index settings; see [repository indexing](docs/repository-index.md) |
 
 Price keys are `cloudflare/` plus the catalog model ID, for example `cloudflare/openai/gpt-4.1`. Numbers in docs are format examples, not quotes. Include an entry for every distinct model, including `INDEX_MODEL`.
 
@@ -422,15 +422,15 @@ pnpm test
 
 The default suite uses mocked providers and local Git/Python tools. It does not make paid model calls or post GitHub reviews.
 
-| Command | Purpose |
-| ------- | ------- |
-| `pnpm test` | Automated tests |
-| `pnpm eval` | Local reviewer protocol and evaluation tests |
-| `pnpm lint` | Lint |
-| `pnpm typecheck` | Typecheck |
-| `pnpm format:check` | Format check |
-| `pnpm check` | Format, lint, types, tests, and Worker/container build (needs Docker; does not deploy) |
-| `pnpm test:index-runtime` | Local workerd index parse/publish/retrieve smoke test |
+| Command                   | Purpose                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `pnpm test`               | Automated tests                                                                        |
+| `pnpm eval`               | Local reviewer protocol and evaluation tests                                           |
+| `pnpm lint`               | Lint                                                                                   |
+| `pnpm typecheck`          | Typecheck                                                                              |
+| `pnpm format:check`       | Format check                                                                           |
+| `pnpm check`              | Format, lint, types, tests, and Worker/container build (needs Docker; does not deploy) |
+| `pnpm test:index-runtime` | Local workerd index parse/publish/retrieve smoke test                                  |
 
 To run the Worker locally:
 
@@ -451,15 +451,15 @@ Paid model comparisons: [evaluations](docs/evaluations.md) (`pnpm eval:live`).
 
 ## Troubleshooting
 
-| What you see | What to try |
-| ------------ | ----------- |
-| No review appears | App installed on this repo, PR changes code, PR is not a draft. Push a commit or re-run the Sherpa check. |
-| Billing is not configured | Open `/setup`, select the installation, save a gateway, then push a new commit. Saving a gateway does not rerun an old review. |
-| Gateway saved, review incomplete | Token has Workers AI **Read**, gateway has Unified Billing credits, host models exist in the catalog and in `MODEL_PRICING_JSON`. |
-| No installation on the setup page | Sign in as a user who can see the installed App. Organizations may need owner approval. |
-| Setup is unavailable | Host must set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `SETUP_SESSION_SECRET`. |
-| Project tests were skipped | Validation is off by default. It needs the host flag and base-branch opt-in. |
-| Review discarded as stale | The PR moved while the review ran. Look at the newer commit's Workflow. |
+| What you see                      | What to try                                                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| No review appears                 | App installed on this repo, PR changes code, PR is not a draft. Push a commit or re-run the Sherpa check.                         |
+| Billing is not configured         | Open `/setup`, select the installation, save a gateway, then push a new commit. Saving a gateway does not rerun an old review.    |
+| Gateway saved, review incomplete  | Token has Workers AI **Read**, gateway has Unified Billing credits, host models exist in the catalog and in `MODEL_PRICING_JSON`. |
+| No installation on the setup page | Sign in as a user who can see the installed App. Organizations may need owner approval.                                           |
+| Setup is unavailable              | Host must set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `SETUP_SESSION_SECRET`.                                             |
+| Project tests were skipped        | Validation is off by default. It needs the host flag and base-branch opt-in.                                                      |
+| Review discarded as stale         | The PR moved while the review ran. Look at the newer commit's Workflow.                                                           |
 
 Hosts: [deployment troubleshooting](docs/self-hosting.md#troubleshooting) covers webhook status codes, Workflow logs, and container/Git failures.
 
@@ -496,15 +496,15 @@ Design context: [architecture](docs/architecture.md), [review policy](docs/revie
 
 ## Documentation
 
-| Guide | Contents |
-| ----- | -------- |
-| [Self-hosting](docs/self-hosting.md) | GitHub App, models, deploy, local Worker, host troubleshooting |
-| [Architecture](docs/architecture.md) | Workflows, sandbox, routing, judge, budgets |
-| [Review policy](docs/review-policy.md) | Base-commit rules and enrolled `AGENTS.md` |
-| [Repository indexing](docs/repository-index.md) | D1 index lifecycle, retrieval, privacy |
-| [Evaluations](docs/evaluations.md) | Protocol tests and optional live model comparison |
-| [Validation record](docs/validation.md) | What has been tested, including remaining live checks |
-| [Repository tools](packages/sandbox/README.md) | Git tools, scanners, optional validation |
+| Guide                                           | Contents                                                       |
+| ----------------------------------------------- | -------------------------------------------------------------- |
+| [Self-hosting](docs/self-hosting.md)            | GitHub App, models, deploy, local Worker, host troubleshooting |
+| [Architecture](docs/architecture.md)            | Workflows, sandbox, routing, judge, budgets                    |
+| [Review policy](docs/review-policy.md)          | Base-commit rules and enrolled `AGENTS.md`                     |
+| [Repository indexing](docs/repository-index.md) | D1 index lifecycle, retrieval, privacy                         |
+| [Evaluations](docs/evaluations.md)              | Protocol tests and optional live model comparison              |
+| [Validation record](docs/validation.md)         | What has been tested, including remaining live checks          |
+| [Repository tools](packages/sandbox/README.md)  | Git tools, scanners, optional validation                       |
 
 ## License
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ModelRef } from "@sherpa/schemas";
+import { log } from "@sherpa/shared";
 
 export type TokenUsage = {
   inputTokens: number;
@@ -14,7 +15,7 @@ export type ModelRequest = {
   maxOutputTokens: number;
   signal: AbortSignal;
   outputSchema?: Record<string, unknown>;
-  reasoningEffort?: "none" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
 };
 export type ModelResponse = { text: string; usage: TokenUsage; durationMs: number };
 export interface ModelProvider {
@@ -42,6 +43,15 @@ export class ProviderError extends Error {
     public readonly code: string,
     public readonly retryable = false,
     public readonly retryAfterMs = 0,
+    /**
+     * The provider's own error identifier and the parameter it named, when the body
+     * carries them. A status alone cannot separate an unknown model from a rejected
+     * parameter, and the gateway is asked not to collect log payloads, so nothing else
+     * keeps this. Identifiers only -- never the error prose, which can quote the
+     * request. Stays off `message` so review output keeps rendering the bare code.
+     */
+    public readonly providerCode = "",
+    public readonly param = "",
   ) {
     super(code);
     this.name = "ProviderError";
@@ -131,6 +141,45 @@ export const gatewayConfigSchema = z
       .regex(/^[\x21-\x7e]+$/),
   })
   .strict();
+/**
+ * Identifier-shaped: an enumerated provider error code or a request parameter name.
+ * Anything else is dropped rather than truncated, so prose can never reach a log.
+ */
+const identifier = /^[A-Za-z0-9_.:\-[\]]{1,64}$/;
+const providerFailure = z
+  .object({
+    error: z
+      .object({ code: z.unknown().optional(), type: z.unknown().optional(), param: z.unknown() })
+      .partial(),
+  })
+  .partial();
+
+/**
+ * Reads the provider's error body for its own error identifier and the parameter it
+ * blamed. OpenAI-compatible providers answer a rejected argument with
+ * `{ error: { code, param } }`, and `param` is the whole diagnosis: it names the field
+ * to change. The prose in `error.message` is deliberately not read -- it can quote the
+ * request back, and error bodies never enter logs.
+ */
+async function readProviderFailure(
+  response: Response,
+  key: string,
+): Promise<{ providerCode: string; param: string }> {
+  const empty = { providerCode: "", param: "" };
+  try {
+    const parsed = providerFailure.safeParse(await boundedJson(response));
+    if (!parsed.success) return empty;
+    const error = parsed.data.error;
+    // An error body is an untrusted echo of our own request, so a value is kept only if
+    // it is identifier-shaped and holds no part of the credential we just sent.
+    const pick = (value: unknown) =>
+      typeof value === "string" && identifier.test(value) && !value.includes(key) ? value : "";
+    return { providerCode: pick(error?.code) || pick(error?.type), param: pick(error?.param) };
+  } catch {
+    return empty;
+  }
+}
+
 /** Models that accept reasoning_effort. gpt-4.1 does not, and neither do most Workers AI models. */
 function reasoningModel(provider: string, model: string): boolean {
   if (provider === "cloudflare" && /^@cf\/moonshotai\/kimi-k2\.6$/.test(model)) return true;
@@ -251,11 +300,19 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
                 : retry
                   ? Date.parse(retry) - Date.now()
                   : 0;
-            await response.body?.cancel();
+            const failure = await readProviderFailure(response, key);
+            log("provider_error", {
+              code: `PROVIDER_HTTP_${response.status}`,
+              model: request.model,
+              providerCode: failure.providerCode,
+              param: failure.param,
+            });
             throw new ProviderError(
               `PROVIDER_HTTP_${response.status}`,
               response.status === 429 || response.status >= 500,
               Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0,
+              failure.providerCode,
+              failure.param,
             );
           }
           const data = await boundedJson(response);
