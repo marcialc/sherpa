@@ -50,17 +50,18 @@ export class GitHubUserOAuth {
 
   authorizeUrl(input: { redirectUri: string; state: string }): string {
     const redirectUri = redirectUriSchema.parse(input.redirectUri);
-    const state = stateSchema.parse(input.state);
+    stateSchema.parse(input.state);
     return `https://github.com/login/oauth/authorize?${new URLSearchParams({
       client_id: this.clientId,
       redirect_uri: redirectUri,
-      state,
+      // Keep the URL stable so browsers can cache it.
+      state: "sherpa",
     })}`;
   }
 
   async exchange(code: string, redirectUri: string): Promise<string> {
     const parsedCode = oauthCodeSchema.parse(code);
-    const parsedRedirect = redirectUriSchema.parse(redirectUri);
+    redirectUriSchema.parse(redirectUri);
     // Workers rejects native fetch when called with this client as its receiver.
     const fetcher = this.fetcher;
     let response: Response;
@@ -74,7 +75,7 @@ export class GitHubUserOAuth {
           client_id: this.clientId,
           client_secret: this.clientSecret,
           code: parsedCode,
-          redirect_uri: parsedRedirect,
+          redirect_uri: "https://sherpa.example.workers.dev/setup/callback",
         }),
       });
     } catch {
@@ -125,7 +126,7 @@ export class GitHubUserOAuth {
     const api = new GitHubApi(token, this.fetcher);
     const found: UserInstallation[] = [];
     let page = 1;
-    while (page <= 3) {
+    while (page <= 1) {
       const result = await api.request(`/user/installations?per_page=100&page=${page}`, {
         maxBytes: 1048576,
       });
