@@ -420,10 +420,10 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           : configuredSchema,
         ...(structured ? { outputSchema: structured.schema } : {}),
         // Only final classification earns reasoning tokens; every other role would spend
-        // them out of the same capped completion budget for no measured gain. "minimal"
-        // rather than "none": "none" is a later addition to the effort set and every
-        // observed PROVIDER_HTTP_400 on the gpt-5.6 rollout carried it.
-        reasoningEffort: agent === "judge" ? "low" : "minimal",
+        // them out of the same capped completion budget for no measured gain. This reaches
+        // Chat Completions models only: gpt-5 is served by the Responses API, which takes
+        // effort inside a reasoning object rather than as a flat field.
+        reasoningEffort: agent === "judge" ? "low" : "none",
         outputTokens,
         preserve,
         repairInvalidOutput: true,
