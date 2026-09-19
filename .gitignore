@@ -5,6 +5,7 @@ node_modules/
 !.wrangler/deploy/
 .wrangler/deploy/*
 !.wrangler/deploy/config.json
+apps/worker/.wrangler/
 dist/
 coverage/
 artifacts/evals/
@@ -15,3 +16,5 @@ artifacts/evals/
 *.pem
 *.key
 .DS_Store
+notes/
+.claude/
