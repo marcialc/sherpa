@@ -419,6 +419,9 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
             )
           : configuredSchema,
         ...(structured ? { outputSchema: structured.schema } : {}),
+        // Only final classification earns reasoning tokens; every other role would spend
+        // them out of the same capped completion budget for no measured gain.
+        reasoningEffort: agent === "judge" ? "low" : "none",
         outputTokens,
         preserve,
         repairInvalidOutput: true,

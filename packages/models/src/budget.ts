@@ -194,6 +194,7 @@ export class ReviewBudget {
     outputTokens: number;
     schema: z.ZodType<T>;
     outputSchema?: Record<string, unknown>;
+    reasoningEffort?: "none" | "low" | "medium" | "high";
     preserve?: BudgetReserve;
     repairInvalidOutput?: boolean;
     onInvalidOutput?: (diagnostic: OutputDiagnostic) => void;
@@ -259,6 +260,7 @@ export class ReviewBudget {
             maxOutputTokens: args.outputTokens,
             signal: controller.signal,
             ...(args.outputSchema ? { outputSchema: args.outputSchema } : {}),
+            ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
           }),
           timeout,
         ]);
