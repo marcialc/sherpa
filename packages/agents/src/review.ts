@@ -89,10 +89,18 @@ const judgeTokens = 6500;
 const maxCandidates = 6;
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value).byteLength;
+/**
+ * These codes are what the pull request actually shows, so a rejected request carries the
+ * parameter the provider blamed: PROVIDER_HTTP_400 on its own cannot say which field to
+ * change, and the body that said so is kept nowhere else. The parameter is already
+ * identifier-shaped and free of the credential by the time it reaches here.
+ */
 const safeError = (error: unknown) =>
-  error instanceof BudgetError || error instanceof ProviderError
-    ? error.code
-    : "REVIEW_COMPONENT_FAILED";
+  error instanceof ProviderError && error.param
+    ? `${error.code} (${error.param})`
+    : error instanceof BudgetError || error instanceof ProviderError
+      ? error.code
+      : "REVIEW_COMPONENT_FAILED";
 
 function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
   let remaining = 12000;

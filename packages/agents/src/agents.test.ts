@@ -7,6 +7,7 @@ import {
   type RepositoryTools,
 } from "@sherpa/schemas";
 import {
+  ProviderError,
   ReviewBudget,
   type ModelProvider,
   type ModelRequest,
@@ -646,6 +647,33 @@ describe("verified investigation protocol", () => {
     expect(result.warnings).toContain("CORRECTNESS_MODEL_INVALID_SCHEMA");
     expect(result.cost.calls).toHaveLength(4);
     expect(options.tools.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("names the parameter a provider rejected, so the note says which field to change", async () => {
+    const options = singleReviewer(
+      fixture(() => {
+        throw new ProviderError(
+          "PROVIDER_HTTP_400",
+          false,
+          0,
+          "unsupported_value",
+          "reasoning_effort",
+        );
+      }),
+    );
+    const result = await runReview(options);
+    expect(result.outcome).toBe("REVIEW_FAILED");
+    expect(result.warnings).toContain("CORRECTNESS_PROVIDER_HTTP_400 (reasoning_effort)");
+  });
+
+  it("leaves a provider failure that named no parameter as the bare code", async () => {
+    const options = singleReviewer(
+      fixture(() => {
+        throw new ProviderError("PROVIDER_HTTP_500", false);
+      }),
+    );
+    const result = await runReview(options);
+    expect(result.warnings).toContain("CORRECTNESS_PROVIDER_HTTP_500");
   });
 
   it("requires testing to retrieve context before it can return a clean review", async () => {
