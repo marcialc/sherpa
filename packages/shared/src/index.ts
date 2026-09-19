@@ -36,6 +36,15 @@ export type LogFields = {
   /** The provider's own error identifier, and the request parameter it blamed. */
   providerCode?: string;
   param?: string;
+  /**
+   * A rejected repository tool: which tool, which rule refused it, and the line span it
+   * asked for. No path and no output -- naming the rule and the number is enough to say
+   * what the model did wrong, without putting repository content in a log.
+   */
+  tool?: string;
+  reason?: string;
+  span?: number;
+  agent?: string;
   totalEstimatedUsd?: number;
 };
 /** Deliberately narrow fields: error bodies, model text and repository content never enter logs. */

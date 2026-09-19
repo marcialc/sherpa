@@ -8,6 +8,7 @@ import type {
   ToolResult,
 } from "@sherpa/schemas";
 import { BudgetError, ProviderError, type ReviewBudget } from "@sherpa/models";
+import { log } from "@sherpa/shared";
 import { strictToolRequestSchema, type EvidenceRecord, type Hypothesis } from "./investigation";
 import { emitDiagnostic, toolDiagnosticCode, type ReviewDiagnostic } from "./diagnostics";
 
@@ -47,15 +48,27 @@ export class EvidenceStore {
     this.budget.assertTime();
     const timeoutMs = Math.min(30000, this.budget.remainingMs() - reserveMs);
     if (timeoutMs <= 0) throw new BudgetError("TOOL_TIME_RESERVE");
+    // A rejection here fails the whole specialist, so record which rule refused it. The
+    // tool name, the rule and the span are enough to tell the two causes apart; the path
+    // and the output stay out, because repository content does not belong in a log.
+    const unscoped = (reason: string, span?: number): never => {
+      log("tool_rejected", {
+        tool: request.tool,
+        reason,
+        agent: owner,
+        ...(span === undefined ? {} : { span }),
+      });
+      throw new ProviderError("UNSCOPED_TOOL_REQUEST");
+    };
     if (request.tool === "readFile" || request.tool === "gitShow") {
       const startLine = request.startLine ?? 1;
       const endLine = request.endLine ?? startLine + 59;
-      if (endLine < startLine || endLine - startLine >= 100)
-        throw new ProviderError("UNSCOPED_TOOL_REQUEST");
+      if (endLine < startLine) unscoped("inverted_range", endLine - startLine);
+      if (endLine - startLine >= 100) unscoped("line_span", endLine - startLine);
       request = { ...request, startLine, endLine };
     }
     if ((request.tool === "gitDiff" || request.tool === "gitLog") && !request.path)
-      throw new ProviderError("UNSCOPED_TOOL_REQUEST");
+      unscoped("missing_path");
     const validationKey: Record<string, "tests" | "typecheck" | "lint" | "security"> = {
       runTests: "tests",
       runTypecheck: "typecheck",

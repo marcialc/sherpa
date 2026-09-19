@@ -15,11 +15,16 @@ type JsonSchema = {
 };
 
 /**
- * Enable only the model families verified through our Cloudflare transport. Both families
- * enforce the schema by constrained decoding, which is what keeps `constrainNativeEvidence`
- * able to enumerate evidence ids instead of trusting free text. Other gateway providers
- * (anthropic/*, grok/*, @cf/*) are reachable but their response_format handling is
- * unverified here, so they fall back to prompt-instructed JSON.
+ * Model families asked to enforce the schema by constrained decoding, which is what keeps
+ * `constrainNativeEvidence` able to enumerate evidence ids instead of trusting free text.
+ * Other gateway providers (anthropic/*, grok/*, @cf/*) are reachable but their
+ * response_format handling is unverified here, so they fall back to prompt-instructed JSON.
+ *
+ * gpt-4.1 is verified: it has served strict schemas through the Chat Completions transport
+ * in production. gpt-5 is NOT verified -- it is served by the Responses API, where the
+ * schema travels as `text.format` and no live call has yet confirmed that strict is
+ * accepted. If it is refused, the failure names `text.format` in the review note and this
+ * pattern is the single line to narrow.
  */
 const openAiStrict =
   /^gpt-4\.1(?:-mini|-nano)?(?:-2025-04-14)?$|^gpt-5(?:\.[0-9])?(?:-(?:sol|terra|luna|mini|nano))?$/;
