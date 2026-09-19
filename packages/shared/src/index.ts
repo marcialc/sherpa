@@ -1,3 +1,4 @@
+import { redactSecrets } from "./redact";
 export async function readBoundedText(
   body: ReadableStream<Uint8Array> | null,
   maxBytes: number,
@@ -21,6 +22,8 @@ export async function readBoundedText(
     reader.releaseLock();
   }
 }
+
+export { registerSecret } from "./redact";
 
 export type LogFields = {
   reviewId?: string;
@@ -49,7 +52,7 @@ export type LogFields = {
 };
 /** Deliberately narrow fields: error bodies, model text and repository content never enter logs. */
 export function log(event: string, fields: LogFields = {}): void {
-  console.log(JSON.stringify({ event, ...fields }));
+  console.log(redactSecrets(JSON.stringify({ event, ...fields })));
 }
 export async function hashText(value: string): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ModelRef } from "@sherpa/schemas";
-import { log } from "@sherpa/shared";
+import { log, registerSecret } from "@sherpa/shared";
 
 export type TokenUsage = {
   inputTokens: number;
@@ -245,6 +245,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
   for (const name of ["openai", "anthropic", "moonshot", "cloudflare"] as const) {
     const key = name === "cloudflare" ? gateway?.apiToken : config[`${name}ApiKey`];
     if (!key) continue;
+    registerSecret(key);
     // The path depends on the model, not just the provider: a Responses model and a Chat
     // Completions model on the same account are two different URLs.
     const endpointFor = (model: string) =>
