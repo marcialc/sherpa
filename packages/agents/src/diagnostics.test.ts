@@ -145,11 +145,46 @@ describe("investigation diagnostics", () => {
       );
     // The prompt quotes maxToolLineSpan, so the boundary it names has to be the real one:
     // gpt-5.6 lost three reviewers to spans of 105 and 179 against an undocumented limit.
-    await expect(read(1 + maxToolLineSpan)).resolves.toMatchObject({ owner: "correctness" });
-    await expect(read(2 + maxToolLineSpan)).rejects.toThrow("UNSCOPED_TOOL_REQUEST");
+    await expect(read(1 + maxToolLineSpan)).resolves.toMatchObject({
+      request: { endLine: 1 + maxToolLineSpan },
+    });
+    // One line past it is trimmed and served, not refused: losing a whole reviewer over
+    // an eleven-line overshoot costs more than the lines are worth.
+    await expect(read(50 + maxToolLineSpan)).resolves.toMatchObject({
+      request: { startLine: 1, endLine: 1 + maxToolLineSpan },
+    });
+  });
+
+  it("still refuses a range that cannot be read at all", async () => {
+    const tools: RepositoryTools = {
+      execute: async (request) => ({
+        tool: request.tool,
+        status: "ok" as const,
+        output: "source",
+        truncated: false,
+        durationMs: 1,
+      }),
+    };
+    const store = new EvidenceStore(
+      tools,
+      new ReviewBudget({ maxUsd: 1, maxCalls: 8, deadline: Date.now() + 5000 }, {}),
+      repoConfigSchema.parse({}),
+      vi.fn(),
+    );
+    await expect(
+      store.capture(
+        { tool: "readFile", path: "a.ts", startLine: 80, endLine: 20 },
+        "correctness",
+        "investigation",
+        "correctness-0",
+      ),
+    ).rejects.toThrow("UNSCOPED_TOOL_REQUEST");
   });
 
   it.each(["ANALYZE", "VERIFY"] as const)("tells %s the span it must stay within", (phase) => {
-    expect(specialistPrompt("correctness", phase)).toContain(`at most ${maxToolLineSpan}`);
+    const prompt = specialistPrompt("correctness", phase);
+    expect(prompt).toContain(`at most ${maxToolLineSpan}`);
+    // The prompt must describe what the executor actually does with a wider range.
+    expect(prompt).toContain("trimmed to that many lines");
   });
 });
