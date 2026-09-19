@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ReviewBudget } from "@sherpa/models";
 import { repoConfigSchema, type RepositoryTools, type ToolRequest } from "@sherpa/schemas";
 import { EvidenceStore } from "./evidence";
+import { maxToolLineSpan } from "./investigation";
+import { specialistPrompt } from "./prompts";
 import type { ReviewDiagnostic } from "./diagnostics";
 
 describe("investigation diagnostics", () => {
@@ -115,5 +117,39 @@ describe("investigation diagnostics", () => {
     await expect(
       store.capture({ tool: "runTests" }, "testing", "investigation", "testing-0"),
     ).resolves.toMatchObject({ result: { status: "skipped" } });
+  });
+
+  it("accepts a range at the documented span and refuses one line past it", async () => {
+    const tools: RepositoryTools = {
+      execute: async (request) => ({
+        tool: request.tool,
+        status: "ok" as const,
+        output: "source",
+        truncated: false,
+        durationMs: 1,
+      }),
+    };
+    const store = () =>
+      new EvidenceStore(
+        tools,
+        new ReviewBudget({ maxUsd: 1, maxCalls: 8, deadline: Date.now() + 5000 }, {}),
+        repoConfigSchema.parse({}),
+        vi.fn(),
+      );
+    const read = (endLine: number) =>
+      store().capture(
+        { tool: "readFile", path: "a.ts", startLine: 1, endLine },
+        "correctness",
+        "investigation",
+        "correctness-0",
+      );
+    // The prompt quotes maxToolLineSpan, so the boundary it names has to be the real one:
+    // gpt-5.6 lost three reviewers to spans of 105 and 179 against an undocumented limit.
+    await expect(read(1 + maxToolLineSpan)).resolves.toMatchObject({ owner: "correctness" });
+    await expect(read(2 + maxToolLineSpan)).rejects.toThrow("UNSCOPED_TOOL_REQUEST");
+  });
+
+  it.each(["ANALYZE", "VERIFY"] as const)("tells %s the span it must stay within", (phase) => {
+    expect(specialistPrompt("correctness", phase)).toContain(`at most ${maxToolLineSpan}`);
   });
 });

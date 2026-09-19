@@ -13,6 +13,14 @@ import {
 import { ProviderError } from "@sherpa/models";
 import { reviewableLines } from "./findings";
 
+/**
+ * Widest line range a readFile or gitShow request may ask for. The executor refuses a
+ * wider one outright, which ends that reviewer, so the prompt has to quote this same
+ * number -- a model cannot respect a limit it is never told. One constant so the rule
+ * and its description cannot drift apart.
+ */
+export const maxToolLineSpan = 99;
+
 /** Validate every current tool variant without silently dropping unexpected keys. */
 export const strictToolRequestSchema = z
   .custom<ToolRequest>(
