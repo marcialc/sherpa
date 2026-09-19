@@ -15,7 +15,7 @@ export type ModelRequest = {
   maxOutputTokens: number;
   signal: AbortSignal;
   outputSchema?: Record<string, unknown>;
-  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "low" | "medium" | "high";
 };
 export type ModelResponse = { text: string; usage: TokenUsage; durationMs: number };
 export interface ModelProvider {
@@ -77,6 +77,32 @@ const chatResponse = z.object({
     completion_tokens: tokenCount,
     prompt_tokens_details: z.object({ cached_tokens: tokenCount.optional() }).optional(),
     cached_tokens: tokenCount.optional(),
+  }),
+});
+/**
+ * Responses API reply. The answer is one entry in `output`, which also carries reasoning
+ * entries, so the text is taken from `message` items only -- reading `output[0]` blindly
+ * would return a reasoning summary as the review. Token fields are named differently from
+ * Chat Completions, and cost accounting reads them, so they are mapped rather than reused.
+ */
+const responsesResponse = z.object({
+  status: z.string().optional(),
+  output_text: z.string().max(131072).optional(),
+  output: z
+    .array(
+      z.object({
+        type: z.string().optional(),
+        content: z
+          .array(z.object({ type: z.string().optional(), text: z.string().max(131072).optional() }))
+          .max(32)
+          .optional(),
+      }),
+    )
+    .max(64),
+  usage: z.object({
+    input_tokens: tokenCount,
+    output_tokens: tokenCount,
+    input_tokens_details: z.object({ cached_tokens: tokenCount.optional() }).optional(),
   }),
 });
 const anthropicResponse = z.object({
@@ -180,6 +206,24 @@ async function readProviderFailure(
   }
 }
 
+/**
+ * Model families served by the Responses API instead of Chat Completions. They are two
+ * different endpoints with different field names, so the model name alone decides which
+ * request to build: `messages` posted at a Responses model is refused by the gateway
+ * before any inference runs, which is how the gpt-5.6 rollout failed with zero tokens
+ * billed and a 400 that named no parameter.
+ */
+function responsesModel(provider: string, model: string): boolean {
+  if (provider === "cloudflare")
+    return (
+      model.startsWith("openai/") &&
+      /^gpt-5(?:\.[0-9])?(?:-(?:sol|terra|luna|mini|nano))?$/.test(model.slice(7))
+    );
+  return (
+    provider === "openai" && /^gpt-5(?:\.[0-9])?(?:-(?:sol|terra|luna|mini|nano))?$/.test(model)
+  );
+}
+
 /** Models that accept reasoning_effort. gpt-4.1 does not, and neither do most Workers AI models. */
 function reasoningModel(provider: string, model: string): boolean {
   if (provider === "cloudflare" && /^@cf\/moonshotai\/kimi-k2\.6$/.test(model)) return true;
@@ -201,10 +245,16 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
   for (const name of ["openai", "anthropic", "moonshot", "cloudflare"] as const) {
     const key = name === "cloudflare" ? gateway?.apiToken : config[`${name}ApiKey`];
     if (!key) continue;
-    const endpoint =
+    // The path depends on the model, not just the provider: a Responses model and a Chat
+    // Completions model on the same account are two different URLs.
+    const endpointFor = (model: string) =>
       name === "cloudflare"
-        ? `https://api.cloudflare.com/client/v4/accounts/${gateway!.accountId}/ai/v1/chat/completions`
-        : endpoints[name];
+        ? `https://api.cloudflare.com/client/v4/accounts/${gateway!.accountId}/ai/v1/${
+            responsesModel(name, model) ? "responses" : "chat/completions"
+          }`
+        : name === "openai" && responsesModel(name, model)
+          ? "https://api.openai.com/v1/responses"
+          : endpoints[name];
     registry[name] = {
       maxRetries: Math.max(0, Math.min(config.maxRetries ?? 2, 2)),
       async complete(request) {
@@ -218,6 +268,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
           request.maxOutputTokens > 8192
         )
           throw new ProviderError("INVALID_MODEL_REQUEST");
+        const useResponses = responsesModel(name, request.model);
         const messages = [
           { role: "system", content: request.system },
           { role: "user", content: request.user },
@@ -230,32 +281,55 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
                 messages: [messages[1]],
                 max_tokens: request.maxOutputTokens,
               }
-            : {
-                model: request.model,
-                messages,
-                response_format: request.outputSchema
-                  ? {
-                      type: "json_schema",
-                      json_schema: {
-                        name: "sherpa_review",
-                        strict: true,
-                        schema: request.outputSchema,
-                      },
-                    }
-                  : { type: "json_object" },
-                ...(name === "openai" ||
-                (name === "cloudflare" &&
-                  (request.model.startsWith("openai/") || request.model.startsWith("@cf/")))
-                  ? { max_completion_tokens: request.maxOutputTokens, store: false }
-                  : { max_tokens: request.maxOutputTokens }),
-                // Reasoning tokens are drawn from the same completion budget as the answer,
-                // and that budget is capped at 8192. Send an explicit effort so a reasoning
-                // model cannot spend the judge's output allowance before it starts writing.
-                ...(reasoningModel(name, request.model) && request.reasoningEffort
-                  ? { reasoning_effort: request.reasoningEffort }
-                  : {}),
-                ...(name === "cloudflare" ? { stream: false } : {}),
-              },
+            : useResponses
+              ? {
+                  model: request.model,
+                  instructions: request.system,
+                  input: request.user,
+                  max_output_tokens: request.maxOutputTokens,
+                  text: {
+                    format: request.outputSchema
+                      ? {
+                          type: "json_schema",
+                          name: "sherpa_review",
+                          strict: true,
+                          schema: request.outputSchema,
+                        }
+                      : { type: "json_object" },
+                  },
+                  // `reasoning.effort` is deliberately absent. Its accepted values on this
+                  // endpoint are unverified, and an unverified value is what broke the last
+                  // rollout. Defaulting costs output budget rather than failing the request,
+                  // which is the safer of the two until one live call settles the set.
+                  store: false,
+                  stream: false,
+                }
+              : {
+                  model: request.model,
+                  messages,
+                  response_format: request.outputSchema
+                    ? {
+                        type: "json_schema",
+                        json_schema: {
+                          name: "sherpa_review",
+                          strict: true,
+                          schema: request.outputSchema,
+                        },
+                      }
+                    : { type: "json_object" },
+                  ...(name === "openai" ||
+                  (name === "cloudflare" &&
+                    (request.model.startsWith("openai/") || request.model.startsWith("@cf/")))
+                    ? { max_completion_tokens: request.maxOutputTokens, store: false }
+                    : { max_tokens: request.maxOutputTokens }),
+                  // Reasoning tokens are drawn from the same completion budget as the answer,
+                  // and that budget is capped at 8192. Send an explicit effort so a reasoning
+                  // model cannot spend the judge's output allowance before it starts writing.
+                  ...(reasoningModel(name, request.model) && request.reasoningEffort
+                    ? { reasoning_effort: request.reasoningEffort }
+                    : {}),
+                  ...(name === "cloudflare" ? { stream: false } : {}),
+                },
         );
         if (new TextEncoder().encode(body).byteLength > 131072)
           throw new ProviderError("MODEL_REQUEST_TOO_LARGE");
@@ -266,7 +340,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
         const timer = setTimeout(abort, timeoutMs);
         const started = Date.now();
         try {
-          const response = await send(endpoint, {
+          const response = await send(endpointFor(request.model), {
             method: "POST",
             redirect: "manual",
             signal: controller.signal,
@@ -316,6 +390,33 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
             );
           }
           const data = await boundedJson(response);
+          if (useResponses) {
+            const parsed = responsesResponse.safeParse(data);
+            if (!parsed.success) throw new ProviderError("PROVIDER_INVALID_RESPONSE");
+            const value = parsed.data;
+            if (value.status && value.status !== "completed")
+              throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE", true);
+            const text =
+              value.output_text ??
+              value.output
+                .filter((item) => item.type === "message")
+                .flatMap((item) => item.content ?? [])
+                .map((part) => part.text ?? "")
+                .join("");
+            if (!text) throw new ProviderError("PROVIDER_INCOMPLETE_RESPONSE", true);
+            const cachedTokens = value.usage.input_tokens_details?.cached_tokens ?? 0;
+            if (cachedTokens > value.usage.input_tokens)
+              throw new ProviderError("PROVIDER_INVALID_USAGE");
+            return {
+              text,
+              usage: {
+                inputTokens: value.usage.input_tokens,
+                outputTokens: value.usage.output_tokens,
+                cachedTokens,
+              },
+              durationMs: Date.now() - started,
+            };
+          }
           if (name === "anthropic") {
             const parsed = anthropicResponse.safeParse(data);
             if (!parsed.success) throw new ProviderError("PROVIDER_INVALID_RESPONSE");

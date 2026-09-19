@@ -216,16 +216,16 @@ describe("Cloudflare AI Gateway single-token inference", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  // gpt-5 is absent by design: it is a Responses model, where effort is not a flat field.
   it.each([
-    ["openai/gpt-5.6-terra", "minimal", "minimal"],
-    ["openai/gpt-5.6-luna", "low", "low"],
-    ["openai/gpt-4.1-mini", "minimal", undefined],
+    ["@cf/moonshotai/kimi-k2.6", "low", "low"],
+    ["openai/gpt-4.1-mini", "low", undefined],
   ])("sends reasoning_effort to %s only when the model accepts it", async (model, effort, sent) => {
     const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
     await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
       ...request,
       model,
-      reasoningEffort: effort as "minimal" | "low",
+      reasoningEffort: effort as "low",
     });
     expect(JSON.parse(send.mock.calls[0]![1]!.body as string).reasoning_effort).toBe(sent);
   });
@@ -268,5 +268,115 @@ describe("Cloudflare AI Gateway single-token inference", () => {
         request,
       ),
     ).rejects.toMatchObject({ message: "PROVIDER_HTTP_400", providerCode: "", param: "" });
+  });
+
+  const responsesReply = (output: unknown[], extra: Record<string, unknown> = {}) =>
+    Response.json({
+      status: "completed",
+      output,
+      usage: { input_tokens: 120, output_tokens: 30, input_tokens_details: { cached_tokens: 50 } },
+      ...extra,
+    });
+
+  it("posts a gpt-5 model to the responses endpoint with responses field names", async () => {
+    const send = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        responsesReply([{ type: "message", content: [{ type: "output_text", text: "{}" }] }]),
+      );
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      model: "openai/gpt-5.6-terra",
+    });
+    const [url, init] = send.mock.calls[0]!;
+    expect(url).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${gateway.accountId}/ai/v1/responses`,
+    );
+    const body = JSON.parse(init!.body as string);
+    expect(body).toMatchObject({
+      model: "openai/gpt-5.6-terra",
+      instructions: request.system,
+      input: request.user,
+      max_output_tokens: request.maxOutputTokens,
+    });
+    // The fields that made the gpt-5.6 rollout a 400: chat-only names must not appear.
+    expect(body.messages).toBeUndefined();
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.response_format).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
+  });
+
+  it("keeps gpt-4.1 on chat completions", async () => {
+    const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      model: "openai/gpt-4.1",
+    });
+    expect(send.mock.calls[0]![0]).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${gateway.accountId}/ai/v1/chat/completions`,
+    );
+    expect(JSON.parse(send.mock.calls[0]![1]!.body as string).messages).toHaveLength(2);
+  });
+
+  it("carries a strict schema as text.format on the responses endpoint", async () => {
+    const send = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        responsesReply([{ type: "message", content: [{ type: "output_text", text: "{}" }] }]),
+      );
+    const outputSchema = {
+      type: "object",
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+      additionalProperties: false,
+    };
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      model: "openai/gpt-5.6-luna",
+      outputSchema,
+    });
+    expect(JSON.parse(send.mock.calls[0]![1]!.body as string).text).toEqual({
+      format: { type: "json_schema", name: "sherpa_review", strict: true, schema: outputSchema },
+    });
+  });
+
+  it("reads the message item, not a reasoning item that precedes it", async () => {
+    const send = vi.fn<typeof fetch>().mockImplementation(async () =>
+      responsesReply([
+        { type: "reasoning", content: [{ type: "reasoning_text", text: "thinking out loud" }] },
+        { type: "message", content: [{ type: "output_text", text: '{"findings":[]}' }] },
+      ]),
+    );
+    const result = await createProviderRegistry({
+      cloudflareGateway: gateway,
+      fetch: send,
+    }).cloudflare!.complete({ ...request, model: "openai/gpt-5.6-terra" });
+    expect(result.text).toBe('{"findings":[]}');
+    expect(result.usage).toEqual({ inputTokens: 120, outputTokens: 30, cachedTokens: 50 });
+  });
+
+  it("fails closed when a responses reply is truncated or produced no message", async () => {
+    const truncated = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => responsesReply([], { status: "incomplete" }));
+    await expect(
+      createProviderRegistry({ cloudflareGateway: gateway, fetch: truncated }).cloudflare!.complete(
+        {
+          ...request,
+          model: "openai/gpt-5.6-terra",
+        },
+      ),
+    ).rejects.toThrow("PROVIDER_INCOMPLETE_RESPONSE");
+    const reasoningOnly = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        responsesReply([{ type: "reasoning", content: [{ type: "reasoning_text", text: "hm" }] }]),
+      );
+    await expect(
+      createProviderRegistry({
+        cloudflareGateway: gateway,
+        fetch: reasoningOnly,
+      }).cloudflare!.complete({ ...request, model: "openai/gpt-5.6-terra" }),
+    ).rejects.toThrow("PROVIDER_INCOMPLETE_RESPONSE");
   });
 });
