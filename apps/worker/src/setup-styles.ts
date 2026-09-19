@@ -83,10 +83,6 @@ code {
   padding: 0.15em 0.35em;
   overflow-wrap: anywhere;
 }
-svg {
-  width: 100%;
-  height: 100%;
-}
 .site-header {
   max-width: 1160px;
   margin: auto;
@@ -108,14 +104,12 @@ svg {
 .brand:hover {
   text-decoration: none;
 }
-.brand-mark {
+.brand img {
   display: block;
   width: 37px;
   height: 37px;
-  padding: 6px;
-  border-radius: 11px;
-  background: #1b3555;
-  color: #fff;
+  border-radius: 50%;
+  flex: none;
 }
 .brand-divider {
   height: 21px;
@@ -319,11 +313,13 @@ main {
 .illustration {
   width: 65px;
   height: 65px;
-  padding: 11px;
-  border-radius: 18px;
-  background: #eaf0f8;
-  color: #2b5078;
   margin-bottom: 20px;
+}
+.illustration img {
+  display: block;
+  width: 65px;
+  height: 65px;
+  border-radius: 50%;
 }
 .empty-state h2 {
   font-size: 1.35rem;
