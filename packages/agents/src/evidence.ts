@@ -67,9 +67,21 @@ export class EvidenceStore {
     };
     if (request.tool === "readFile" || request.tool === "gitShow") {
       const startLine = request.startLine ?? 1;
-      const endLine = request.endLine ?? startLine + 59;
-      if (endLine < startLine) unscoped("inverted_range", endLine - startLine);
-      if (endLine - startLine > maxToolLineSpan) unscoped("line_span", endLine - startLine);
+      const requested = request.endLine ?? startLine + 59;
+      // Too wide is narrowable; incoherent is not. A range that merely overshoots is
+      // trimmed and served, because failing it loses the whole reviewer over evidence
+      // nobody disputes -- one read eleven lines too long has failed an entire review.
+      // The record keeps the range actually read, so attestation still checks quotes
+      // against returned lines. An inverted range has no safe reading and still fails.
+      if (requested < startLine) unscoped("inverted_range", requested - startLine);
+      const endLine = Math.min(requested, startLine + maxToolLineSpan);
+      if (endLine !== requested)
+        log("tool_clamped", {
+          tool: request.tool,
+          reason: "line_span",
+          agent: owner,
+          span: requested - startLine,
+        });
       request = { ...request, startLine, endLine };
     }
     if ((request.tool === "gitDiff" || request.tool === "gitLog") && !request.path)
