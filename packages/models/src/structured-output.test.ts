@@ -89,4 +89,28 @@ describe("strict structured output", () => {
       true,
     );
   });
+
+  it("enables strict mode for the gpt-5 family and no other gateway provider", () => {
+    for (const model of ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5-mini", "gpt-5"])
+      expect(supportsStructuredOutput({ provider: "cloudflare", model: `openai/${model}` })).toBe(
+        true,
+      );
+    // Reachable through the same gateway, but their response_format handling is unverified.
+    for (const model of ["anthropic/claude-sonnet-5", "grok/grok-4.6"])
+      expect(supportsStructuredOutput({ provider: "cloudflare", model })).toBe(false);
+  });
+
+  it("enables strict mode only for the enumerated Workers AI model", () => {
+    expect(
+      supportsStructuredOutput({ provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.6" }),
+    ).toBe(true);
+    // Siblings and other Workers AI families do not inherit it.
+    for (const model of [
+      "@cf/moonshotai/kimi-k2.5",
+      "@cf/moonshotai/kimi-k2.7-code",
+      "@cf/openai/gpt-oss-120b",
+      "@cf/qwen/qwen3-30b-a3b-fp8",
+    ])
+      expect(supportsStructuredOutput({ provider: "cloudflare", model })).toBe(false);
+  });
 });

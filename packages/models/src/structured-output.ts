@@ -14,13 +14,28 @@ type JsonSchema = {
   [key: string]: unknown;
 };
 
-/** Enable only the model family verified through our Cloudflare transport. */
+/**
+ * Enable only the model families verified through our Cloudflare transport. Both families
+ * enforce the schema by constrained decoding, which is what keeps `constrainNativeEvidence`
+ * able to enumerate evidence ids instead of trusting free text. Other gateway providers
+ * (anthropic/*, grok/*, @cf/*) are reachable but their response_format handling is
+ * unverified here, so they fall back to prompt-instructed JSON.
+ */
+const openAiStrict =
+  /^gpt-4\.1(?:-mini|-nano)?(?:-2025-04-14)?$|^gpt-5(?:\.[0-9])?(?:-(?:sol|terra|luna|mini|nano))?$/;
+/**
+ * Workers AI models whose own model card documents response_format, unlike the general
+ * JSON-mode model list. Enumerated one at a time: a sibling release does not inherit this.
+ */
+const workersAiStrict = /^@cf\/moonshotai\/kimi-k2\.6$/;
+
 export function supportsStructuredOutput(ref: ModelRef): boolean {
+  if (ref.provider === "cloudflare" && workersAiStrict.test(ref.model)) return true;
   const model = ref.provider === "cloudflare" ? ref.model.replace(/^openai\//, "") : ref.model;
   return (
     (ref.provider === "openai" ||
       (ref.provider === "cloudflare" && ref.model.startsWith("openai/"))) &&
-    /^gpt-4\.1(?:-mini)?(?:-2025-04-14)?$/.test(model)
+    openAiStrict.test(model)
   );
 }
 
