@@ -127,6 +127,17 @@ function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
   };
 }
 
+/**
+ * A patch we never received hides changed lines from the review. GitHub also omits the
+ * patch when there are no lines to show — binary blobs, pure renames, unchanged entries —
+ * and those report no additions or deletions, so they leave nothing uncovered. A diff
+ * dropped for size still carries its counts, and so still reads as a gap here.
+ */
+function missingPatch(file: ChangedFile): boolean {
+  if (file.patch || file.status === "removed") return false;
+  return file.additions > 0 || file.deletions > 0;
+}
+
 function sameHypothesis(a: VerifiedCandidate, b: VerifiedCandidate): boolean {
   return (
     a.hypothesis.path === b.hypothesis.path &&
@@ -220,8 +231,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           Math.min(1500, Math.max(1, budget.remainingMs() / 20)),
         )
       : undefined;
-  if (code.truncated || files.some((file) => !file.patch && file.status !== "removed"))
-    incomplete("INCOMPLETE_DIFF_COVERAGE");
+  if (code.truncated || files.some(missingPatch)) incomplete("INCOMPLETE_DIFF_COVERAGE");
   if (files.some((file) => file.deletions > 0 && !reviewableLines(file).length))
     incomplete("INCOMPLETE_DELETION_COVERAGE");
   const prContext = { title: context.title.slice(0, 500), body: context.body.slice(0, 1000) };

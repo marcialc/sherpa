@@ -937,6 +937,32 @@ describe("verified investigation protocol", () => {
     expect(options.provider.complete).not.toHaveBeenCalled();
   });
 
+  it("keeps coverage complete when a patchless file changed no lines", async () => {
+    const options = fixture((request) =>
+      replayResponse(request, { hypothesis, relatedPath, reject: true }),
+    );
+    options.files = [
+      file,
+      { path: "src/assets/logo.png", status: "added", additions: 0, deletions: 0 },
+    ];
+    const result = await runReview(options);
+    expect(result.warnings).not.toContain("INCOMPLETE_DIFF_COVERAGE");
+    expect(result.coverageComplete).toBe(true);
+  });
+
+  it("still reports incomplete coverage when a patch was dropped for size", async () => {
+    const options = fixture((request) =>
+      replayResponse(request, { hypothesis, relatedPath, reject: true }),
+    );
+    options.files = [
+      file,
+      { path: "src/generated.ts", status: "modified", additions: 4000, deletions: 12 },
+    ];
+    const result = await runReview(options);
+    expect(result.warnings).toContain("INCOMPLETE_DIFF_COVERAGE");
+    expect(result.coverageComplete).toBe(false);
+  });
+
   it("rejects disproved hypotheses without claiming incomplete coverage or adding filler", async () => {
     const options = fixture((request) =>
       replayResponse(request, { hypothesis, relatedPath, reject: true }),
