@@ -3,3 +3,4 @@ apps/worker/worker-configuration.d.ts
 node_modules
 dist
 .wrangler
+.claude/worktrees
