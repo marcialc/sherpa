@@ -225,6 +225,8 @@ describe("guided setup pages", () => {
       expect(body).toContain("I’ve installed it · Refresh");
       expect(body).not.toContain('name="api_token"');
       expect(body).toContain('aria-current="step"');
+      expect(body).toContain('src="/logo.png"');
+      expect(body).toContain('rel="icon" href="/logo.png"');
     } finally {
       identity.mockRestore();
     }
@@ -244,7 +246,10 @@ describe("guided setup pages", () => {
         { fetch: setup.fetch },
       );
       expect(response.status).toBe(200);
-      expect(await response.text()).toContain("/setup?installation_id=17");
+      const body = await response.text();
+      expect(body).toContain("/setup?installation_id=17");
+      expect(body).toContain('src="/logo.png"');
+      expect(body).toContain("<strong>acme</strong>");
     } finally {
       identity.mockRestore();
     }
@@ -280,6 +285,7 @@ describe("guided setup pages", () => {
     expect(body).not.toContain(gateway.apiToken);
     expect(settings.stored.get("17")).toEqual(gateway);
     expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("img-src 'self'");
   });
   it("removes a saved gateway only through the authorized form and returns to billing setup", async () => {
     const settings = memorySettings();

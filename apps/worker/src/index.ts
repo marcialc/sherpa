@@ -2,6 +2,7 @@ import { handleWebhook } from "./webhook";
 import { dispatchReview } from "./dispatch";
 import { dispatchIndex } from "./index-dispatch";
 import { handleSetup } from "./setup";
+import { logoResponse } from "./logo";
 import type { RuntimeEnv } from "./settings";
 export { ReviewWorkflow } from "./workflow";
 export { RepositoryIndexWorkflow } from "./index-workflow";
@@ -14,6 +15,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET")
       return Response.json({ service: "sherpa", status: "ok" });
+    if (url.pathname === "/logo.png" && request.method === "GET") return logoResponse();
     if (url.pathname === "/github/webhook")
       return handleWebhook(request, {
         secret: env.GITHUB_WEBHOOK_SECRET,
