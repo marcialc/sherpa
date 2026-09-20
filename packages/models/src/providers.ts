@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ModelRef } from "@sherpa/schemas";
 import { log } from "@sherpa/shared";
+import { retryDelayMs } from "./retry";
 
 export type TokenUsage = {
   inputTokens: number;
@@ -367,13 +368,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
             body,
           });
           if (!response.ok) {
-            const retry = response.headers.get("retry-after");
-            const retryMs =
-              retry && /^\d+(\.\d+)?$/.test(retry)
-                ? Number(retry) * 1000
-                : retry
-                  ? Date.parse(retry) - Date.now()
-                  : 0;
+            const retryMs = retryDelayMs(response.headers.get("retry-after"));
             const failure = await readProviderFailure(response, key);
             log("provider_error", {
               code: `PROVIDER_HTTP_${response.status}`,
@@ -384,7 +379,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
             throw new ProviderError(
               `PROVIDER_HTTP_${response.status}`,
               response.status === 429 || response.status >= 500,
-              Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0,
+              retryMs,
               failure.providerCode,
               failure.param,
             );
