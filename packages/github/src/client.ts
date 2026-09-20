@@ -20,6 +20,7 @@ import {
   findingMarker,
   formatFinding,
   formatSummary,
+  maxReviewBodyBytes,
   reviewMarker,
   reviewEvent,
   selectFindings,
@@ -106,7 +107,7 @@ function reuseBlockingReviewBody(previousBody: string | null, job: ReviewJob): s
     .trim();
   if (!remainder) return null;
   const combined = `${rerunIncompleteNote}\n\n${remainder}\n${reviewMarker(job)}`;
-  return new TextEncoder().encode(combined).byteLength <= 60000 ? combined : null;
+  return new TextEncoder().encode(combined).byteLength <= maxReviewBodyBytes ? combined : null;
 }
 
 export class GitHubClient {
