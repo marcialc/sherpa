@@ -154,6 +154,24 @@ describe("trusted base reviewer policy", () => {
     });
   });
 
+  it("separates rules dropped after matching from paths dropped before matching", () => {
+    const config = repoConfigSchema.parse({
+      reviewRules: Array.from({ length: 5 }, (_, index) => ({
+        paths: ["src/**"],
+        instructions: `Rule ${index}`,
+      })),
+    });
+    expect(trustedRulesFor(config, "correctness", ["src/api.ts"])).toMatchObject({
+      truncated: true,
+      pathsTruncated: false,
+    });
+    const overflowing = Array.from({ length: 301 }, (_, index) => `src/file${index}.ts`);
+    expect(trustedRulesFor(repoConfigSchema.parse({}), "correctness", overflowing)).toMatchObject({
+      truncated: false,
+      pathsTruncated: true,
+    });
+  });
+
   it("loads only explicitly configured base AGENTS.md files with automatic directory scope", async () => {
     const read = vi.fn(async (path: string) =>
       path === "AGENTS.md"

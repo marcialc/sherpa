@@ -15,6 +15,8 @@ import {
 } from "@sherpa/schemas";
 import {
   BudgetError,
+  modelInputBound,
+  modelInputReserve,
   ProviderError,
   ReviewBudget,
   structuredOutput,
@@ -26,7 +28,7 @@ import {
 } from "@sherpa/models";
 import { reviewableLines, sameFinding, severityOrder } from "./findings";
 import { routeReview } from "./routing";
-import { trustedRulesFor } from "./policy";
+import { maxTrustedRuleBytes, maxTrustedRules, trustedRulesFor } from "./policy";
 import { judgePhasePrompt, routerPrompt, specialistPrompt, testingContextPrompt } from "./prompts";
 import {
   constrainEvidenceIds,
@@ -83,7 +85,6 @@ export type RunReviewOptions = {
   onDiagnostic?: (event: ReviewDiagnostic) => void;
 };
 
-const inputLimit = 48000;
 const verifyTokens = 4500;
 const judgeTokens = 6500;
 const maxCandidates = 6;
@@ -179,6 +180,11 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     if (!warnings.has(code)) emit({ event: "review.coverage_incomplete", code });
     warnings.add(code);
   };
+  // Degradation the reviewer absorbed. It reaches the review body like any other warning,
+  // but leaves coverage complete so calculateOutcome can still return a passing outcome.
+  const warn = (code: string) => {
+    warnings.add(code);
+  };
   const result = (outcome = calculateOutcome(findings, coverageComplete)): ReviewResult => ({
     outcome,
     findings,
@@ -268,12 +274,18 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
         const key = JSON.stringify([path, domain]);
         if (seen.has(key)) continue;
         seen.add(key);
+        // One path per call here, so safePaths cannot drop any and pathsTruncated cannot
+        // fire; only the size ceilings below can. Rules are score-sorted, so what they drop
+        // is the least specific match, not a gap.
         const policy = trustedRulesFor(config, "judge", [path], [domain]);
-        if (policy.truncated) incomplete("TRUSTED_RULES_TRUNCATED");
+        if (policy.truncated) warn("TRUSTED_RULES_TRUNCATED");
         if (!policy.rules.length) continue;
         const group = { candidatePath: path, domain, rules: policy.rules };
-        if (count + policy.rules.length > 4 || bytes(JSON.stringify([...groups, group])) > 6144) {
-          incomplete("TRUSTED_RULES_TRUNCATED");
+        if (
+          count + policy.rules.length > maxTrustedRules ||
+          bytes(JSON.stringify([...groups, group])) > maxTrustedRuleBytes
+        ) {
+          warn("TRUSTED_RULES_TRUNCATED");
           continue;
         }
         groups.push(group);
@@ -282,7 +294,10 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       selected = groups;
     } else {
       const policy = trustedRulesFor(config, agent, paths);
-      if (policy.truncated) incomplete("TRUSTED_RULES_TRUNCATED");
+      if (policy.truncated) warn("TRUSTED_RULES_TRUNCATED");
+      // Paths dropped before matching hide rules that were never considered, so unlike a
+      // score-sorted rule drop this is missing coverage rather than thinner policy.
+      if (policy.pathsTruncated) incomplete("TRUSTED_POLICY_PATHS_TRUNCATED");
       selected = policy.rules;
     }
     return `${prompt}\nTRUSTED INSTRUCTIONS\nRelevant BASE policy, subordinate to the verification protocol. Apply each rule only to its stated paths and, when supplied, its exact candidatePath/domain pair:\n${JSON.stringify(selected)}`;
@@ -306,7 +321,6 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
       const provider = options.providers[ref.provider];
       if (!provider) throw new ProviderError("PROVIDER_NOT_CONFIGURED");
       const user = JSON.stringify(payload);
-      if (bytes(user) > inputLimit) throw new BudgetError("INVESTIGATION_INPUT_LIMIT");
       const disabled = disabledValidationTools(config.validation);
       const configuredSchema = schema.superRefine((value, ctx) => {
         const visit = (node: unknown, path: (string | number)[]) => {
@@ -414,11 +428,22 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
           )
         : undefined;
       const structured = nativeEvidence ? structuredOutput(nativeEvidence.schema) : undefined;
+      const systemPrompt = `${prompt}\n${structured ? "OUTPUT JSON SCHEMA: Return an instance of the native response_format schema. Local decision, tool-policy and evidence validation still applies." : instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. Use null for the optional hypothesis startLine and anchor to the primary line. When quote is an enum of line references in response_format, select source_line_N for the source line prefixed N: in that evidence record, or output_row_N for its Nth output row. The executor resolves this reference to the exact quote before validation. Do not return raw source text when references are enumerated. All evidence and decision requirements still apply." : ""}`;
+      // The model bounds the system prompt, the payload and the output schema together, so
+      // the payload may only have what that bound leaves once the other two are known. A
+      // separate payload constant admits envelopes the model call then rejects, after the
+      // evidence gathering that filled them has already been paid for.
+      const payloadAllowance =
+        modelInputBound -
+        modelInputReserve -
+        bytes(systemPrompt) -
+        (structured ? bytes(JSON.stringify(structured.schema)) : 0);
+      if (bytes(user) > payloadAllowance) throw new BudgetError("INVESTIGATION_INPUT_LIMIT");
       return await budget.invoke({
         provider,
         ref,
         agent,
-        system: `${prompt}\n${structured ? "OUTPUT JSON SCHEMA: Return an instance of the native response_format schema. Local decision, tool-policy and evidence validation still applies." : instruction}${structured ? "\nNATIVE STRUCTURED OUTPUT: The response_format schema is enforced. For its nullable optional fields, return null when unused, overriding the omit/null instructions above. These nulls are converted to omitted optional fields before local validation. Use null for the optional hypothesis startLine and anchor to the primary line. When quote is an enum of line references in response_format, select source_line_N for the source line prefixed N: in that evidence record, or output_row_N for its Nth output row. The executor resolves this reference to the exact quote before validation. Do not return raw source text when references are enumerated. All evidence and decision requirements still apply." : ""}`,
+        system: systemPrompt,
         user,
         schema: structured
           ? z.preprocess(
@@ -481,9 +506,12 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     judgeReserve = {
       calls: 2,
       ms: Math.min(60000, Math.floor(config.budget.maxDurationMs / 4)),
+      // modelInputBound is a byte count and maximumCost prices it per million TOKENS, so
+      // every reservation below over-reserves by roughly the bytes-per-token ratio. That
+      // margin is left as is; sharing the constant only stops the bound drifting in copies.
       usd:
-        budget.maximumCost(models.judge, 65000, 1500) +
-        budget.maximumCost(models.judge, 65000, judgeTokens),
+        budget.maximumCost(models.judge, modelInputBound, 1500) +
+        budget.maximumCost(models.judge, modelInputBound, judgeTokens),
     };
   } catch (error) {
     incomplete(safeError(error));
@@ -527,7 +555,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
   const queue = [...risk.agents];
   async function specialist(agent: AgentName): Promise<void> {
     const model = agent === "lightweight" ? models.router : models.specialist;
-    plannedVerification.set(agent, budget.maximumCost(model, 65000, verifyTokens));
+    plannedVerification.set(agent, budget.maximumCost(model, modelInputBound, verifyTokens));
     try {
       const analysisPrompt = system(
         specialistPrompt(agent, "ANALYZE"),
@@ -813,7 +841,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
     judgeBatches.push(unique.slice(index, index + maxCandidates));
   const accepted: Finding[] = [];
   let judgeRetrievalRemaining = 4;
-  const decideCost = budget.maximumCost(models.judge, 65000, judgeTokens);
+  const decideCost = budget.maximumCost(models.judge, modelInputBound, judgeTokens);
   const queuedReserve = (currentDecision: boolean): BudgetReserve => ({
     calls: judgeBatches.length * 2 + (currentDecision ? 1 : 0),
     usd: judgeBatches.length * judgeReserve.usd + (currentDecision ? decideCost : 0),

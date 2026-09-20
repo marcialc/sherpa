@@ -48,8 +48,26 @@ export function policyGlobMatches(pattern: string, path: string): boolean {
   return current[path.length]!;
 }
 
+/**
+ * Ceilings on the trusted policy that reaches one system prompt. The config schema permits
+ * far more rules than a prompt can carry, so selection here and the judge's per-candidate
+ * grouping in review.ts both stop at the same point; were they to differ, one would assemble
+ * a prompt the other treats as over budget. Exceeding either ceiling drops the lowest-scoring
+ * rules and reports a warning -- it never fails the review. One definition so the two sites
+ * cannot drift apart.
+ */
+export const maxTrustedRules = 4;
+export const maxTrustedRuleBytes = 6144;
+
 type ScopedRule = { instructions: string; paths: string[] };
-export type TrustedRules = { rules: ScopedRule[]; truncated: boolean };
+/**
+ * Two truncations with opposite consequences, so they cannot share one flag. `truncated`
+ * means score-sorted rules were dropped after matching: the most specific matches still
+ * apply, so the policy is thinner but not wrong. `pathsTruncated` means safePaths discarded
+ * changed paths before matching, so a rule that should have matched may never have been
+ * considered -- a real coverage gap, and the only one of the two that may fail a review.
+ */
+export type TrustedRules = { rules: ScopedRule[]; truncated: boolean; pathsTruncated: boolean };
 const encodedBytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
 function specificity(pattern: string): number {
@@ -97,12 +115,12 @@ export function trustedRulesFor(
         : [];
     })
     .sort((a, b) => b.score - a.score || a.index - b.index);
-  const result: TrustedRules = { rules: [], truncated: paths.length > 300 };
+  const result: TrustedRules = { rules: [], truncated: false, pathsTruncated: paths.length > 300 };
   let usedBytes = encodedBytes(result);
   for (const match of matching) {
     const rule = { paths: match.paths, instructions: match.rule.instructions };
     const size = encodedBytes(rule) + (result.rules.length ? 1 : 0);
-    if (result.rules.length >= 4 || usedBytes + size > 6144) {
+    if (result.rules.length >= maxTrustedRules || usedBytes + size > maxTrustedRuleBytes) {
       result.truncated = true;
       continue;
     }
