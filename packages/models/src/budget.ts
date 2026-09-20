@@ -37,6 +37,18 @@ export class BudgetError extends Error {
     this.name = "BudgetError";
   }
 }
+/**
+ * The single bound on a model request. Callers sizing their own payload derive the room they
+ * have left from these, so a payload they admit cannot be rejected on its first attempt here,
+ * after the evidence gathering that produced it is already paid for. The invariant stops at
+ * that first attempt: a repair rebuilds a larger request -- the correction instruction, plus
+ * the failed response and the original payload re-escaped inside a JSON wrapper -- and is
+ * bounded again on those bytes, so an admitted payload can still be refused on the way back.
+ * Nothing is held back for that, so the room a caller derives is the first attempt's alone.
+ */
+export const modelInputBound = 65000;
+/** Request framing the prompt bytes do not account for. */
+export const modelInputReserve = 1024;
 const rateSchema = z
   .object({
     inputUsdPerMillion: z.number().finite().nonnegative(),
@@ -215,8 +227,8 @@ export class ReviewBudget {
       const inputBound =
         new TextEncoder().encode(
           system + user + (args.outputSchema ? JSON.stringify(args.outputSchema) : ""),
-        ).byteLength + 1024;
-      if (inputBound > 65000) throw new BudgetError("MODEL_INPUT_LIMIT");
+        ).byteLength + modelInputReserve;
+      if (inputBound > modelInputBound) throw new BudgetError("MODEL_INPUT_LIMIT");
       const ticket = this.reserve(args.ref, args.agent, inputBound, args.outputTokens, preserve);
       const attemptDiagnostic = (
         event: ModelAttemptDiagnostic["event"],
@@ -230,7 +242,7 @@ export class ReviewBudget {
             correction: repaired,
             durationMs: this.now() - ticket.started,
             remainingMs: this.remainingMs(),
-            inputBytes: inputBound - 1024,
+            inputBytes: inputBound - modelInputReserve,
             maxOutputTokens: args.outputTokens,
             ...extra,
           });

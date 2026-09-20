@@ -152,6 +152,10 @@ function reviewNote(code: string): string {
     INCOMPLETE_DIFF_COVERAGE:
       "Some changed files or diff sections were unavailable or too large to review.",
     NO_ENABLED_REVIEWERS: "No reviewers were enabled for this change.",
+    TRUSTED_RULES_TRUNCATED:
+      "More repository review rules matched than fit in one reviewer prompt; the most specific matches were applied.",
+    TRUSTED_POLICY_PATHS_TRUNCATED:
+      "The changed-file list was too large to match every repository review rule against, so some rules may not have been applied.",
     CANDIDATE_LIMIT: "The analysis limit was reached before all proposed findings could be judged.",
     JUDGE_INPUT_LIMIT: "Some proposed findings exceeded the judge's context limit.",
     JUDGE_MODEL_INPUT_LIMIT: "Some proposed findings exceeded the judge's context limit.",
