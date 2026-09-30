@@ -321,7 +321,17 @@ export class ReviewBudget {
       } finally {
         clearTimeout(timer);
       }
-      this.settle(ticket, result);
+      try {
+        this.settle(ticket, result);
+      } catch (error) {
+        // Name the bound the reply broke; the error alone cannot say which one it was.
+        attemptDiagnostic("review.model_failed", {
+          code: "BUDGET_ACCOUNTING_UNCERTAIN",
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+        });
+        throw error;
+      }
       this.assertTime();
       let parsed: unknown;
       let diagnostic: OutputDiagnostic | undefined;

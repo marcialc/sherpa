@@ -217,8 +217,21 @@ describe("Cloudflare AI Gateway single-token inference", () => {
   });
 
   // gpt-5 is absent by design: it is a Responses model, where effort is not a flat field.
+  it("caps a Claude reply by max_completion_tokens, without OpenAI-only fields", async () => {
+    const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());
+    await createProviderRegistry({ cloudflareGateway: gateway, fetch: send }).cloudflare!.complete({
+      ...request,
+      model: "anthropic/claude-sonnet-5",
+    });
+    const body = JSON.parse(send.mock.calls[0]![1]!.body as string);
+    expect(body.max_completion_tokens).toBe(request.maxOutputTokens);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.store).toBeUndefined();
+  });
+
   it.each([
     ["@cf/moonshotai/kimi-k2.6", "low", "low"],
+    ["anthropic/claude-sonnet-5", "none", "none"],
     ["openai/gpt-4.1-mini", "low", undefined],
   ])("sends reasoning_effort to %s only when the model accepts it", async (model, effort, sent) => {
     const send = vi.fn<typeof fetch>().mockImplementation(async () => completion());

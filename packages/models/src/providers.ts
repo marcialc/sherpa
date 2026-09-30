@@ -230,6 +230,9 @@ function responsesModel(provider: string, model: string): boolean {
 /** Models that accept reasoning_effort. gpt-4.1 does not, and neither do most Workers AI models. */
 function reasoningModel(provider: string, model: string): boolean {
   if (provider === "cloudflare" && /^@cf\/moonshotai\/kimi-k2\.6$/.test(model)) return true;
+  // Claude thinks by default and bills that thinking as output, so without an explicit
+  // effort a specialist can spend its whole completion budget before answering.
+  if (provider === "cloudflare" && model.startsWith("anthropic/")) return true;
   const name =
     provider === "cloudflare" ? (model.startsWith("openai/") ? model.slice(7) : "") : model;
   return /^gpt-5(?:\.[0-9])?(?:-(?:sol|terra|luna|mini|nano))?$/.test(name);
@@ -324,7 +327,11 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
                   (name === "cloudflare" &&
                     (request.model.startsWith("openai/") || request.model.startsWith("@cf/")))
                     ? { max_completion_tokens: request.maxOutputTokens, store: false }
-                    : { max_tokens: request.maxOutputTokens }),
+                    : // A Claude reply sent max_tokens came back reporting more output than that,
+                      // so the gateway did not pass it on. Use the field it takes for its others.
+                      name === "cloudflare" && request.model.startsWith("anthropic/")
+                      ? { max_completion_tokens: request.maxOutputTokens }
+                      : { max_tokens: request.maxOutputTokens }),
                   // Reasoning tokens are drawn from the same completion budget as the answer,
                   // and that budget is capped at 8192. Send an explicit effort so a reasoning
                   // model cannot spend the judge's output allowance before it starts writing.

@@ -7,6 +7,7 @@ import {
   estimateUsageUsd,
   modelInputBound,
   schemaDiagnostic,
+  type ModelAttemptDiagnostic,
   type ModelProvider,
   type ModelResponse,
   type PricingTable,
@@ -497,6 +498,26 @@ describe("shared budget reservations", () => {
       "BUDGET_ACCOUNTING_UNCERTAIN",
     );
     expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+  it("reports the usage that broke the reservation", async () => {
+    const events: ModelAttemptDiagnostic[] = [];
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValue({ ...response(), usage: { inputTokens: 100, outputTokens: 9000 } }),
+    };
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 1000 },
+      pricing,
+    );
+    await expect(
+      budget.invoke({ ...args, provider, onAttempt: (event) => events.push(event) }),
+    ).rejects.toThrow("BUDGET_ACCOUNTING_UNCERTAIN");
+    expect(events.at(-1)).toMatchObject({
+      event: "review.model_failed",
+      code: "BUDGET_ACCOUNTING_UNCERTAIN",
+      outputTokens: 9000,
+    });
   });
   it("protects judge execution time and rejects invalid reservation bounds", async () => {
     const provider = { complete: vi.fn().mockResolvedValue(response()) };
