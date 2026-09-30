@@ -370,7 +370,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
             const retry = response.headers.get("retry-after");
             const retryMs =
               retry && /^\d+(\.\d+)?$/.test(retry)
-                ? Number(retry) * 1000
+                ? Number.parseInt(retry, 10) * 1000
                 : retry
                   ? Date.parse(retry) - Date.now()
                   : 0;
