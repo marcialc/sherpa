@@ -171,16 +171,40 @@ function singleReviewer(options: ReturnType<typeof fixture>) {
  */
 function nearBoundPayload(options: ReturnType<typeof fixture>, evidenceBytes: number) {
   singleReviewer(options);
+  // Three distinct reads per hypothesis, so evidence as well as the diff fills the payload.
+  const wide = {
+    ...hypothesis,
+    verificationRequests: [1, 61, 121].map((startLine) => ({
+      tool: "readFile" as const,
+      path: relatedPath,
+      startLine,
+      endLine: startLine + 59,
+    })),
+  };
+  const hypotheses = [
+    wide,
+    ...[0, 1].map((index) => ({ ...wide, id: `filler-${index}`, path: `src/filler-${index}.ts` })),
+  ];
+  vi.mocked(options.provider.complete).mockImplementation(async (request) => {
+    const envelope = JSON.parse(request.user) as {
+      phase: string;
+      contextDiscoveryRequired?: boolean;
+    };
+    return envelope.phase === "ANALYZE" && !envelope.contextDiscoveryRequired
+      ? modelResponse({ phase: "ANALYZE", hypotheses })
+      : replayResponse(request, { hypothesis: wide, relatedPath });
+  });
   options.files = [
     file,
     ...Array.from({ length: 22 }, (_, index) => ({
       ...file,
       path: `src/filler-${index}.ts`,
-      additions: 3,
+      additions: 16,
       deletions: 0,
-      patch: `@@ -1,0 +1,3 @@\n${["a", "b", "c"]
-        .map((suffix) => `+export const filler${index}${suffix} = ${"y".repeat(120)};`)
-        .join("\n")}`,
+      patch: `@@ -1,0 +1,16 @@\n${Array.from(
+        { length: 16 },
+        (_, line) => `+export const filler${index}_${line} = ${"y".repeat(130)};`,
+      ).join("\n")}`,
     })),
   ];
   const execute = options.tools.execute.getMockImplementation()!;
@@ -1243,7 +1267,7 @@ describe("verified investigation protocol", () => {
       options.models.specialist = { provider: "openai", model: "gpt-4.1" };
       return options;
     };
-    const admitted = structuredReviewer(5000);
+    const admitted = structuredReviewer(4400);
     await runReview(admitted);
     const verification = vi
       .mocked(admitted.provider.complete)

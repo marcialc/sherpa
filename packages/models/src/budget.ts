@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ModelRef, ModelUsage, ReviewCost } from "@sherpa/schemas";
 import {
+  modelAttemptTimeoutMs,
   ProviderError,
   type ModelProvider,
   type ModelResponse,
@@ -46,9 +47,17 @@ export class BudgetError extends Error {
  * bounded again on those bytes, so an admitted payload can still be refused on the way back.
  * Nothing is held back for that, so the room a caller derives is the first attempt's alone.
  */
-export const modelInputBound = 65000;
+export const modelInputBound = 240000;
 /** Request framing the prompt bytes do not account for. */
 export const modelInputReserve = 1024;
+/** A timed-out attempt is retried only while this much time is left for the retry. */
+const timeoutRetryWindowMs = 30000;
+/**
+ * A 429 without retry-after is a shared rate window, and parallel agents hit it together.
+ * Sub-second retries land in the same window, so back off in seconds and spread them.
+ */
+const rateLimitBackoffMs = 1500;
+const maxRetryDelayMs = 20000;
 const rateSchema = z
   .object({
     inputUsdPerMillion: z.number().finite().nonnegative(),
@@ -257,9 +266,9 @@ export class ReviewBudget {
         timer = setTimeout(
           () => {
             controller.abort();
-            reject(new ProviderError("PROVIDER_TIMEOUT"));
+            reject(new ProviderError("PROVIDER_TIMEOUT", true));
           },
-          Math.min(45000, this.remainingMs() - (preserve.ms ?? 0)),
+          Math.min(modelAttemptTimeoutMs, this.remainingMs() - (preserve.ms ?? 0)),
         );
       });
       let result: ModelResponse;
@@ -293,8 +302,19 @@ export class ReviewBudget {
           attempt >= Math.min(args.provider.maxRetries ?? 0, 2)
         )
           throw error;
-        const delay = Math.max(250 * 2 ** attempt, error.retryAfterMs);
-        if (delay > 5000 || delay >= this.remainingMs() - (preserve.ms ?? 0))
+        // A timeout already spent its window; a retry that cannot get a real one is waste.
+        if (
+          error.code === "PROVIDER_TIMEOUT" &&
+          this.remainingMs() - (preserve.ms ?? 0) < timeoutRetryWindowMs
+        )
+          throw error;
+        const base =
+          error.code === "PROVIDER_HTTP_429" && !error.retryAfterMs ? rateLimitBackoffMs : 250;
+        const delay = Math.max(
+          base * 2 ** attempt + Math.floor(Math.random() * base),
+          error.retryAfterMs,
+        );
+        if (delay > maxRetryDelayMs || delay >= this.remainingMs() - (preserve.ms ?? 0))
           throw new BudgetError("RETRY_EXCEEDS_DEADLINE");
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;

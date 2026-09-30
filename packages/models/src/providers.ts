@@ -38,6 +38,9 @@ export type ProviderConfig = {
   maxRetries?: number;
 };
 
+/** One model attempt. Reasoning over a full diff routinely outlives a shorter window. */
+export const modelAttemptTimeoutMs = 90000;
+
 export class ProviderError extends Error {
   constructor(
     public readonly code: string,
@@ -241,7 +244,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
   const gateway = config.cloudflareGateway;
   if (gateway && !gatewayConfigSchema.safeParse(gateway).success)
     throw new ProviderError("INVALID_CLOUDFLARE_GATEWAY_CONFIG");
-  const timeoutMs = Math.min(Math.max(config.timeoutMs ?? 45000, 1), 60000);
+  const timeoutMs = Math.min(Math.max(config.timeoutMs ?? modelAttemptTimeoutMs, 1), 120000);
   for (const name of ["openai", "anthropic", "moonshot", "cloudflare"] as const) {
     const key = name === "cloudflare" ? gateway?.apiToken : config[`${name}ApiKey`];
     if (!key) continue;
@@ -331,7 +334,9 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
                   ...(name === "cloudflare" ? { stream: false } : {}),
                 },
         );
-        if (new TextEncoder().encode(body).byteLength > 131072)
+        // The user payload is already JSON, so the body escapes it a second time; this sits
+        // well above the budget's input bound to leave room for that growth.
+        if (new TextEncoder().encode(body).byteLength > 393216)
           throw new ProviderError("MODEL_REQUEST_TOO_LARGE");
         const controller = new AbortController();
         const abort = () => controller.abort();
@@ -463,6 +468,7 @@ export function createProviderRegistry(config: ProviderConfig): ProviderRegistry
           // Provider errors can contain request bodies and credentials. Never expose them.
           throw new ProviderError(
             controller.signal.aborted ? "PROVIDER_TIMEOUT" : "PROVIDER_TRANSPORT_FAILED",
+            controller.signal.aborted,
           );
         } finally {
           clearTimeout(timer);

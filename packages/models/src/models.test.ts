@@ -5,6 +5,7 @@ import {
   ProviderError,
   ReviewBudget,
   estimateUsageUsd,
+  modelInputBound,
   schemaDiagnostic,
   type ModelProvider,
   type ModelResponse,
@@ -214,6 +215,51 @@ describe("shared budget reservations", () => {
     expect(budget.cost().calls[0]!.failed).toBe(true);
     expect(budget.cost().totalEstimatedUsd).toBeGreaterThan(0.001);
   });
+  it("retries a timed-out attempt while the deadline leaves a real window", async () => {
+    const provider: ModelProvider = {
+      maxRetries: 2,
+      complete: vi
+        .fn()
+        .mockRejectedValueOnce(new ProviderError("PROVIDER_TIMEOUT", true))
+        .mockResolvedValue(response()),
+    };
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 60000 },
+      pricing,
+    );
+    expect(await budget.invoke({ ...args, provider })).toEqual({ ok: true });
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+    expect(budget.cost().calls[0]!.failed).toBe(true);
+  });
+  it("does not retry a timeout once too little time is left for another attempt", async () => {
+    const provider: ModelProvider = {
+      maxRetries: 2,
+      complete: vi.fn().mockRejectedValue(new ProviderError("PROVIDER_TIMEOUT", true)),
+    };
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 5000 },
+      pricing,
+    );
+    await expect(budget.invoke({ ...args, provider })).rejects.toThrow("PROVIDER_TIMEOUT");
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+  it("backs off a bare rate limit by seconds, not milliseconds", async () => {
+    const started: number[] = [];
+    const provider: ModelProvider = {
+      maxRetries: 2,
+      complete: vi.fn(async () => {
+        started.push(Date.now());
+        if (started.length === 1) throw new ProviderError("PROVIDER_HTTP_429", true);
+        return response();
+      }),
+    };
+    const budget = new ReviewBudget(
+      { maxUsd: 1, maxCalls: 3, deadline: Date.now() + 10000 },
+      pricing,
+    );
+    expect(await budget.invoke({ ...args, provider })).toEqual({ ok: true });
+    expect(started[1]! - started[0]!).toBeGreaterThanOrEqual(1500);
+  });
   it("does not retry a transport failure with ambiguous consumption", async () => {
     const provider: ModelProvider = {
       maxRetries: 2,
@@ -323,7 +369,7 @@ describe("shared budget reservations", () => {
   it("bounds correction input before sending it to the model", async () => {
     const complete = vi
       .fn<ModelProvider["complete"]>()
-      .mockResolvedValue(response("x".repeat(65000)));
+      .mockResolvedValue(response("x".repeat(modelInputBound)));
     const budget = new ReviewBudget(
       { maxUsd: 1, maxCalls: 4, deadline: Date.now() + 1000 },
       pricing,
@@ -344,7 +390,7 @@ describe("shared budget reservations", () => {
       budget.invoke({
         ...args,
         provider: { complete },
-        outputSchema: { description: "x".repeat(65000) },
+        outputSchema: { description: "x".repeat(modelInputBound) },
       }),
     ).rejects.toThrow("MODEL_INPUT_LIMIT");
     expect(complete).not.toHaveBeenCalled();

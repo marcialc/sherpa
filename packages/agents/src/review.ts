@@ -103,11 +103,18 @@ const safeError = (error: unknown) =>
       ? error.code
       : "REVIEW_COMPONENT_FAILED";
 
+/**
+ * Every analysis, verification and judge payload carries the whole code context, so it has to
+ * leave room under modelInputBound for the system prompt, output schema and gathered evidence.
+ */
+const codeContextBytes = 64000;
+const codeContextFileBytes = 16000;
+
 function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
-  let remaining = 12000;
+  let remaining = codeContextBytes;
   const selected = files.slice(0, 60).map((file) => {
     const raw = encoder.encode(file.patch ?? "");
-    const used = Math.min(raw.byteLength, remaining, 6000);
+    const used = Math.min(raw.byteLength, remaining, codeContextFileBytes);
     const patch = new TextDecoder().decode(raw.slice(0, used));
     remaining -= used;
     return {
