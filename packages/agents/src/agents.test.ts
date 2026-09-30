@@ -1019,6 +1019,31 @@ describe("verified investigation protocol", () => {
     expect(options.provider.complete).not.toHaveBeenCalled();
   });
 
+  it("judges findings on a diff wider than the judge's old fixed cap", async () => {
+    const options = singleReviewer(fixture());
+    options.files = [
+      file,
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...file,
+        path: `src/wide-${index}.ts`,
+        additions: 20,
+        deletions: 0,
+        patch: `@@ -1,0 +1,20 @@\n${Array.from(
+          { length: 20 },
+          (_, line) => `+export const wide${index}_${line} = ${"y".repeat(100)};`,
+        ).join("\n")}`,
+      })),
+    ];
+    const result = await runReview(options);
+    const judge = vi
+      .mocked(options.provider.complete)
+      .mock.calls.map(([request]) => JSON.parse(request.user) as { unverifiedCandidates?: [] })
+      .find((envelope) => envelope.unverifiedCandidates);
+    expect(judge).toBeDefined();
+    expect(result.warnings).not.toContain("JUDGE_INPUT_LIMIT");
+    expect(result.findings).toHaveLength(1);
+  });
+
   it("keeps coverage complete when a patchless file changed no lines", async () => {
     const options = fixture((request) =>
       replayResponse(request, { hypothesis, relatedPath, reject: true }),

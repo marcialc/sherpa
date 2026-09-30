@@ -109,6 +109,12 @@ const safeError = (error: unknown) =>
  */
 const codeContextBytes = 64000;
 const codeContextFileBytes = 16000;
+/**
+ * The judge's code and candidates, before its system prompt, output schema and up to four
+ * retrieved evidence records join them. Derived from the bound, so the room left for those
+ * stays the same when the bound moves, and widening the code window cannot starve the judge.
+ */
+const judgeCandidateBytes = modelInputBound - 41000;
 
 function codeContext(options: RunReviewOptions, files: ChangedFile[]) {
   let remaining = codeContextBytes;
@@ -867,7 +873,7 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
             untrustedCode: code,
             unverifiedCandidates: judged.map(compact),
           }),
-        ) > 24000
+        ) > judgeCandidateBytes
       ) {
         if (judged.length > 1) {
           splitForRetry(judged);
