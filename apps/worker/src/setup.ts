@@ -318,7 +318,7 @@ async function readSession(secret: string, request: Request, now: number): Promi
   if (!value) return null;
   try {
     const session = sessionSchema.parse(JSON.parse(value));
-    if (session.e <= now) return null;
+    if (session.e <= now - SESSION_MAX_AGE * 1000) return null;
     return { userId: session.u, login: session.l, token: session.t };
   } catch {
     return null;
