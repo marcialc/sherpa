@@ -30,6 +30,19 @@ export async function findingFingerprint(input: Finding): Promise<string> {
   );
 }
 
+/**
+ * GitHub refuses a review body past this, so it is the one constraint three call sites
+ * were each spelling out: the summary throws above it, a reused body is discarded above
+ * it, and the per-entry budget is carved out of it. One definition so a change to the
+ * limit cannot leave one of them behind.
+ */
+export const maxReviewBodyBytes = 60000;
+/**
+ * Room the manifest, headings and per-finding framing take on top of the entries
+ * themselves, held back so a body assembled at budget still fits under the limit.
+ */
+const reviewBodyHeadroomBytes = 6000;
+
 export function reviewMarker(job: ReviewJob): string {
   // Opaque validated IDs prevent repository/model text from choosing the idempotency marker.
   if (!/^[a-f0-9]{64}$/.test(job.reviewId)) throw new Error("INVALID_REVIEW_ID");
@@ -234,7 +247,10 @@ export function formatSummary(
   const entryBudget = Math.min(
     1800,
     Math.floor(
-      (54000 - new TextEncoder().encode(manifest).byteLength) / Math.max(1, entries.length),
+      (maxReviewBodyBytes -
+        reviewBodyHeadroomBytes -
+        new TextEncoder().encode(manifest).byteLength) /
+        Math.max(1, entries.length),
     ),
   );
   if (entries.length) body += "\n\n---";
@@ -285,7 +301,7 @@ export function formatSummary(
   body += `\n\n*Reviewed commit \`${job.headSha}\`.*`;
   // Keep a compact manifest in the review body, including fingerprints of inline findings.
   body += manifest;
-  if (new TextEncoder().encode(body).byteLength > 60000)
+  if (new TextEncoder().encode(body).byteLength > maxReviewBodyBytes)
     throw new Error("REVIEW_SUMMARY_TOO_LARGE");
   return body;
 }
